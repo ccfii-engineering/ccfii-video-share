@@ -6,10 +6,47 @@ import ctypes
 import subprocess
 import argparse
 import socket
+from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 JPEG_SOI = b"\xff\xd8"
 JPEG_EOI = b"\xff\xd9"
+
+
+@dataclass(frozen=True)
+class CaptureTarget:
+    """A selectable FFmpeg capture source."""
+    kind: str
+    label: str
+    input_name: str
+    x: int | None = None
+    y: int | None = None
+    width: int | None = None
+    height: int | None = None
+    hwnd: int | None = None
+
+    @classmethod
+    def desktop(cls, monitor):
+        label = (f"Desktop: {monitor.name or 'Display'} - "
+                 f"{monitor.width}x{monitor.height} at ({monitor.x}, {monitor.y})")
+        return cls(
+            kind="desktop",
+            label=label,
+            input_name="desktop",
+            x=monitor.x,
+            y=monitor.y,
+            width=monitor.width,
+            height=monitor.height,
+        )
+
+    @classmethod
+    def window(cls, hwnd: int, title: str):
+        return cls(
+            kind="window",
+            label=f"Window: {title}",
+            input_name=f"hwnd={hwnd}",
+            hwnd=hwnd,
+        )
 
 
 def extract_frames(data: bytes) -> tuple[list[bytes], bytes]:
@@ -200,38 +237,84 @@ def list_monitors():
     return get_monitors()
 
 
-def choose_monitor(monitors):
-    """Present monitors in console and let user pick one."""
-    print("\nAvailable displays:\n")
-    for i, m in enumerate(monitors):
-        print(f"  [{i + 1}] {m.name or 'Display'} — "
-              f"{m.width}x{m.height} at ({m.x}, {m.y})")
+def list_windows():
+    """Return visible top-level windows that have titles."""
+    if sys.platform != "win32":
+        return []
+
+    user32 = ctypes.windll.user32
+    windows = []
+
+    EnumWindowsProc = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p,
+                                         ctypes.c_void_p)
+
+    def callback(hwnd, _lparam):
+        if not user32.IsWindowVisible(hwnd):
+            return True
+        length = user32.GetWindowTextLengthW(hwnd)
+        if length == 0:
+            return True
+        title_buffer = ctypes.create_unicode_buffer(length + 1)
+        user32.GetWindowTextW(hwnd, title_buffer, length + 1)
+        title = title_buffer.value.strip()
+        if not title:
+            return True
+        windows.append(CaptureTarget.window(int(hwnd), title))
+        return True
+
+    user32.EnumWindows(EnumWindowsProc(callback), 0)
+    windows.sort(key=lambda item: item.label.lower())
+    return windows
+
+
+def build_capture_targets(monitors, windows):
+    """Build the ordered list of selectable capture targets."""
+    targets = [CaptureTarget.desktop(monitor) for monitor in monitors]
+    targets.extend(windows)
+    return targets
+
+
+def choose_capture_target(targets):
+    """Present capture targets in console and let user pick one."""
+    print("\nAvailable capture sources:\n")
+    for i, target in enumerate(targets):
+        print(f"  [{i + 1}] {target.label}")
     print()
     while True:
         try:
-            choice = int(input(f"Select display (1-{len(monitors)}): "))
-            if 1 <= choice <= len(monitors):
-                return monitors[choice - 1]
+            choice = int(input(f"Select source (1-{len(targets)}): "))
+            if 1 <= choice <= len(targets):
+                return targets[choice - 1]
         except (ValueError, EOFError):
             pass
         print("Invalid choice, try again.")
 
 
-def start_ffmpeg(monitor, fps: int, quality: int) -> subprocess.Popen:
-    """Launch FFmpeg to capture the given monitor as MJPEG to stdout."""
+def choose_monitor(monitors):
+    """Backward-compatible wrapper for monitor-only selection."""
+    return choose_capture_target([CaptureTarget.desktop(m) for m in monitors])
+
+
+def start_ffmpeg(target: CaptureTarget, fps: int, quality: int) -> subprocess.Popen:
+    """Launch FFmpeg to capture the selected source as MJPEG to stdout."""
     cmd = [
         "ffmpeg",
         "-f", "gdigrab",
         "-framerate", str(fps),
-        "-offset_x", str(monitor.x),
-        "-offset_y", str(monitor.y),
-        "-video_size", f"{monitor.width}x{monitor.height}",
-        "-i", "desktop",
+    ]
+    if target.kind == "desktop":
+        cmd.extend([
+            "-offset_x", str(target.x),
+            "-offset_y", str(target.y),
+            "-video_size", f"{target.width}x{target.height}",
+        ])
+    cmd.extend([
+        "-i", target.input_name,
         "-f", "mjpeg",
         "-q:v", str(quality),
         "-an",
         "-"
-    ]
+    ])
     proc = subprocess.Popen(
         cmd,
         stdout=subprocess.PIPE,
@@ -346,7 +429,7 @@ class CaptureController:
         return self._monitor
 
     def start_capture(self, monitor):
-        """Start capturing the selected monitor."""
+        """Start capturing the selected source."""
         proc = self._start_ffmpeg(monitor, self.fps, self.quality)
         stop_event = threading.Event()
         reader_thread = self._start_reader(
@@ -356,8 +439,7 @@ class CaptureController:
             self._reader_thread = reader_thread
             self._stop_event = stop_event
             self._monitor = monitor
-        print(f"\nCapturing: {monitor.width}x{monitor.height} "
-              f"at ({monitor.x}, {monitor.y}) @ {self.fps}fps\n")
+        print(f"\nCapturing: {monitor.label} @ {self.fps}fps\n")
         return proc
 
     def stop_capture(self):
@@ -376,11 +458,11 @@ class CaptureController:
             reader_thread.join(timeout=5)
 
     def switch_monitor(self):
-        """Prompt for a new monitor and hot-swap FFmpeg capture."""
-        monitor = choose_monitor(self.monitors)
+        """Prompt for a new source and hot-swap FFmpeg capture."""
+        monitor = choose_capture_target(self.monitors)
         self.stop_capture()
         self.start_capture(monitor)
-        print("[*] Display switched. Viewers stay connected on the same URL.")
+        print("[*] Capture source switched. Viewers stay connected on the same URL.")
 
 
 def handle_runtime_command(command: str, controller: CaptureController,
@@ -395,7 +477,7 @@ def handle_runtime_command(command: str, controller: CaptureController,
         shutdown_event.set()
         return True
     if normalized in {"h", "help", "?"}:
-        print("Commands: d = switch display, q = quit, h = help")
+        print("Commands: d = switch display/window, q = quit, h = help")
         return True
     return False
 
@@ -404,7 +486,7 @@ def start_command_listener(controller: CaptureController,
                            shutdown_event: threading.Event) -> threading.Thread:
     """Listen for terminal commands while the server is running."""
     def command_loop():
-        print("Commands: d = switch display, q = quit, h = help")
+        print("Commands: d = switch display/window, q = quit, h = help")
         while not shutdown_event.is_set():
             try:
                 command = input("> ")
@@ -445,18 +527,19 @@ def main():
     if not monitors:
         print("No displays found.")
         sys.exit(1)
+    targets = build_capture_targets(monitors, list_windows())
 
     frame_buffer = FrameBuffer()
     shutdown_event = threading.Event()
     controller = CaptureController(
-        monitors=monitors,
+        monitors=targets,
         fps=args.fps,
         quality=args.quality,
         frame_buffer=frame_buffer,
         shutdown_event=shutdown_event,
     )
 
-    monitor = choose_monitor(monitors)
+    monitor = choose_capture_target(targets)
     controller.start_capture(monitor)
 
     StreamHandler.frame_buffer = frame_buffer

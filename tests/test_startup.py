@@ -17,6 +17,7 @@ class FakeMonitor:
     y = 20
     width = 1280
     height = 720
+    name = "Display 1"
 
 
 class FakeProcess:
@@ -51,9 +52,34 @@ class TestStartupBehavior(unittest.TestCase):
 
     @patch("server.subprocess.Popen")
     def test_start_ffmpeg_captures_stderr(self, mock_popen):
-        server.start_ffmpeg(FakeMonitor(), fps=30, quality=5)
+        target = server.CaptureTarget.desktop(FakeMonitor())
+        server.start_ffmpeg(target, fps=30, quality=5)
 
         self.assertEqual(mock_popen.call_args.kwargs["stderr"], server.subprocess.PIPE)
+
+    @patch("server.subprocess.Popen")
+    def test_start_ffmpeg_uses_desktop_offsets_for_display_target(self, mock_popen):
+        target = server.CaptureTarget.desktop(FakeMonitor())
+
+        server.start_ffmpeg(target, fps=30, quality=5)
+
+        cmd = mock_popen.call_args.args[0]
+        self.assertIn("-offset_x", cmd)
+        self.assertIn("-offset_y", cmd)
+        self.assertIn("-video_size", cmd)
+        self.assertIn("desktop", cmd)
+
+    @patch("server.subprocess.Popen")
+    def test_start_ffmpeg_uses_window_hwnd_for_window_target(self, mock_popen):
+        target = server.CaptureTarget.window(12345, "Notepad")
+
+        server.start_ffmpeg(target, fps=30, quality=5)
+
+        cmd = mock_popen.call_args.args[0]
+        self.assertIn("hwnd=12345", cmd)
+        self.assertNotIn("-offset_x", cmd)
+        self.assertNotIn("-offset_y", cmd)
+        self.assertNotIn("-video_size", cmd)
 
     def test_shutdown_watcher_handles_event_with_server_instance(self):
         shutdown_event = threading.Event()
@@ -126,12 +152,13 @@ class TestStartupBehavior(unittest.TestCase):
         self.assertTrue(shutdown_event.is_set())
 
     def test_capture_controller_switches_to_selected_monitor(self):
-        first_monitor = FakeMonitor()
-        selected_monitor = FakeMonitor()
-        selected_monitor.x = 100
-        selected_monitor.y = 50
-        selected_monitor.width = 1920
-        selected_monitor.height = 1080
+        first_monitor = server.CaptureTarget.desktop(FakeMonitor())
+        monitor = FakeMonitor()
+        monitor.x = 100
+        monitor.y = 50
+        monitor.width = 1920
+        monitor.height = 1080
+        selected_monitor = server.CaptureTarget.desktop(monitor)
         started_monitors = []
         stop_calls = []
 
@@ -142,7 +169,7 @@ class TestStartupBehavior(unittest.TestCase):
         def fake_stop(proc):
             stop_calls.append(proc)
 
-        with patch("server.choose_monitor", return_value=selected_monitor):
+        with patch("server.choose_capture_target", return_value=selected_monitor):
             controller = server.CaptureController(
                 monitors=[first_monitor, selected_monitor],
                 fps=15,
@@ -160,7 +187,7 @@ class TestStartupBehavior(unittest.TestCase):
             controller.switch_monitor()
 
         self.assertEqual(started_monitors, [
-            (controller.monitors[0], 15, 4),
+            (first_monitor, 15, 4),
             (selected_monitor, 15, 4),
         ])
         self.assertEqual(stop_calls, [initial_proc])
