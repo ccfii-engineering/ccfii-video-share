@@ -6,6 +6,7 @@ import ctypes
 import subprocess
 import argparse
 import socket
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 JPEG_SOI = b"\xff\xd8"
 JPEG_EOI = b"\xff\xd9"
@@ -96,8 +97,6 @@ VIEWER_HTML = b"""<!DOCTYPE html>
 </body>
 </html>"""
 
-
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 
 class StreamHandler(BaseHTTPRequestHandler):
