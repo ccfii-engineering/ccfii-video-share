@@ -138,7 +138,7 @@ class StreamHandler(BaseHTTPRequestHandler):
                 self.wfile.write(b"\r\n")
                 self.wfile.write(frame)
                 self.wfile.write(b"\r\n")
-        except (BrokenPipeError, ConnectionResetError):
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
             pass  # viewer disconnected
         finally:
             self.frame_buffer.remove_viewer()
@@ -190,14 +190,44 @@ def start_ffmpeg(monitor, fps: int, quality: int) -> subprocess.Popen:
     proc = subprocess.Popen(
         cmd,
         stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
         bufsize=0,
     )
     return proc
 
 
+def stop_ffmpeg(proc: subprocess.Popen | None):
+    """Stop FFmpeg if it is still running."""
+    if proc is None:
+        return
+    try:
+        proc.terminate()
+    except Exception:
+        return
+    try:
+        proc.wait(timeout=5)
+    except Exception:
+        pass
+
+
+def read_ffmpeg_stderr(proc: subprocess.Popen) -> str:
+    """Return FFmpeg stderr output, if any."""
+    if proc.stderr is None:
+        return ""
+    try:
+        stderr_output = proc.stderr.read()
+    except Exception:
+        return ""
+    if not stderr_output:
+        return ""
+    if isinstance(stderr_output, bytes):
+        return stderr_output.decode("utf-8", errors="replace").strip()
+    return str(stderr_output).strip()
+
+
 def ffmpeg_reader(proc: subprocess.Popen, buffer: FrameBuffer,
-                  shutdown_event: threading.Event):
+                  shutdown_event: threading.Event,
+                  stop_event: threading.Event | None = None):
     """Read FFmpeg stdout, extract frames, push to buffer. Runs in thread."""
     leftover = b""
     while True:
@@ -208,8 +238,139 @@ def ffmpeg_reader(proc: subprocess.Popen, buffer: FrameBuffer,
         frames, leftover = extract_frames(leftover)
         for frame in frames:
             buffer.update(frame)
+    if stop_event is not None and stop_event.is_set():
+        return
+    stderr_details = read_ffmpeg_stderr(proc)
     print("\n[!] FFmpeg process exited unexpectedly.")
+    if stderr_details:
+        print(stderr_details)
     shutdown_event.set()
+
+
+def start_shutdown_watcher(shutdown_event: threading.Event,
+                           server: ThreadingHTTPServer) -> threading.Thread:
+    """Start a thread that shuts the server down when FFmpeg exits."""
+    def watch_shutdown():
+        shutdown_event.wait()
+        print("[!] Initiating shutdown due to FFmpeg exit...")
+        server.shutdown()
+
+    thread = threading.Thread(target=watch_shutdown, daemon=True)
+    thread.start()
+    return thread
+
+
+def start_reader_thread(proc: subprocess.Popen, frame_buffer: FrameBuffer,
+                        shutdown_event: threading.Event,
+                        stop_event: threading.Event) -> threading.Thread:
+    """Start a reader thread for one FFmpeg process."""
+    thread = threading.Thread(
+        target=ffmpeg_reader,
+        args=(proc, frame_buffer, shutdown_event, stop_event),
+        daemon=True,
+    )
+    thread.start()
+    return thread
+
+
+class CaptureController:
+    """Manage FFmpeg capture lifecycle while the HTTP server stays up."""
+
+    def __init__(self, monitors, fps: int, quality: int,
+                 frame_buffer: FrameBuffer,
+                 shutdown_event: threading.Event,
+                 start_ffmpeg_fn=start_ffmpeg,
+                 stop_ffmpeg_fn=stop_ffmpeg,
+                 start_reader_fn=start_reader_thread):
+        self.monitors = monitors
+        self.fps = fps
+        self.quality = quality
+        self.frame_buffer = frame_buffer
+        self.shutdown_event = shutdown_event
+        self._start_ffmpeg = start_ffmpeg_fn
+        self._stop_ffmpeg = stop_ffmpeg_fn
+        self._start_reader = start_reader_fn
+        self._proc = None
+        self._reader_thread = None
+        self._stop_event = None
+        self._monitor = None
+        self._lock = threading.Lock()
+
+    @property
+    def current_monitor(self):
+        return self._monitor
+
+    def start_capture(self, monitor):
+        """Start capturing the selected monitor."""
+        proc = self._start_ffmpeg(monitor, self.fps, self.quality)
+        stop_event = threading.Event()
+        reader_thread = self._start_reader(
+            proc, self.frame_buffer, self.shutdown_event, stop_event)
+        with self._lock:
+            self._proc = proc
+            self._reader_thread = reader_thread
+            self._stop_event = stop_event
+            self._monitor = monitor
+        print(f"\nCapturing: {monitor.width}x{monitor.height} "
+              f"at ({monitor.x}, {monitor.y}) @ {self.fps}fps\n")
+        return proc
+
+    def stop_capture(self):
+        """Stop the active capture process."""
+        with self._lock:
+            proc = self._proc
+            reader_thread = self._reader_thread
+            stop_event = self._stop_event
+            self._proc = None
+            self._reader_thread = None
+            self._stop_event = None
+        if stop_event is not None:
+            stop_event.set()
+        self._stop_ffmpeg(proc)
+        if reader_thread is not None and reader_thread.is_alive():
+            reader_thread.join(timeout=5)
+
+    def switch_monitor(self):
+        """Prompt for a new monitor and hot-swap FFmpeg capture."""
+        monitor = choose_monitor(self.monitors)
+        self.stop_capture()
+        self.start_capture(monitor)
+        print("[*] Display switched. Viewers stay connected on the same URL.")
+
+
+def handle_runtime_command(command: str, controller: CaptureController,
+                           shutdown_event: threading.Event) -> bool:
+    """Handle a runtime terminal command. Returns True if recognized."""
+    normalized = command.strip().lower()
+    if normalized in {"d", "display", "screen"}:
+        controller.switch_monitor()
+        return True
+    if normalized in {"q", "quit", "exit"}:
+        print("[*] Shutting down...")
+        shutdown_event.set()
+        return True
+    if normalized in {"h", "help", "?"}:
+        print("Commands: d = switch display, q = quit, h = help")
+        return True
+    return False
+
+
+def start_command_listener(controller: CaptureController,
+                           shutdown_event: threading.Event) -> threading.Thread:
+    """Listen for terminal commands while the server is running."""
+    def command_loop():
+        print("Commands: d = switch display, q = quit, h = help")
+        while not shutdown_event.is_set():
+            try:
+                command = input("> ")
+            except EOFError:
+                return
+            if not handle_runtime_command(command, controller, shutdown_event):
+                print("Unknown command. Type 'h' for help.")
+
+    thread = threading.Thread(target=command_loop, daemon=True)
+    thread.start()
+    return thread
 
 
 def get_lan_ip() -> str:
@@ -240,30 +401,23 @@ def main():
         print("No displays found.")
         sys.exit(1)
 
-    monitor = choose_monitor(monitors)
-    print(f"\nCapturing: {monitor.width}x{monitor.height} "
-          f"at ({monitor.x}, {monitor.y}) @ {args.fps}fps\n")
-
     frame_buffer = FrameBuffer()
     shutdown_event = threading.Event()
+    controller = CaptureController(
+        monitors=monitors,
+        fps=args.fps,
+        quality=args.quality,
+        frame_buffer=frame_buffer,
+        shutdown_event=shutdown_event,
+    )
 
-    proc = start_ffmpeg(monitor, args.fps, args.quality)
-
-    reader_thread = threading.Thread(
-        target=ffmpeg_reader, args=(proc, frame_buffer, shutdown_event),
-        daemon=True)
-    reader_thread.start()
-
-    # Monitor for unexpected FFmpeg exit in a background thread
-    def watch_shutdown():
-        shutdown_event.wait()
-        print("[!] Initiating shutdown due to FFmpeg exit...")
-        server.shutdown()
-
-    threading.Thread(target=watch_shutdown, daemon=True).start()
+    monitor = choose_monitor(monitors)
+    controller.start_capture(monitor)
 
     StreamHandler.frame_buffer = frame_buffer
     server = ThreadingHTTPServer(("0.0.0.0", args.port), StreamHandler)
+    start_shutdown_watcher(shutdown_event, server)
+    start_command_listener(controller, shutdown_event)
 
     lan_ip = get_lan_ip()
     print(f"Stream live at http://{lan_ip}:{args.port}")
@@ -274,8 +428,8 @@ def main():
     except KeyboardInterrupt:
         print("\nShutting down...")
     finally:
-        proc.terminate()
-        proc.wait()
+        shutdown_event.set()
+        controller.stop_capture()
         server.shutdown()
 
 
