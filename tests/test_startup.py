@@ -95,6 +95,13 @@ class TestStartupBehavior(unittest.TestCase):
 
         handler._serve_stream()
 
+    def test_viewer_html_retries_stream_after_disconnect(self):
+        html = server.VIEWER_HTML.decode("utf-8")
+
+        self.assertIn("setTimeout(connectStream", html)
+        self.assertIn("/stream?ts=", html)
+        self.assertIn("img.onerror", html)
+
     def test_handle_command_switches_display_on_d(self):
         switch_calls = []
 

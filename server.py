@@ -90,10 +90,55 @@ VIEWER_HTML = b"""<!DOCTYPE html>
   * { margin: 0; padding: 0; }
   body { background: #000; overflow: hidden; }
   img { width: 100vw; height: 100vh; object-fit: contain; }
+  .status {
+    position: fixed;
+    left: 16px;
+    bottom: 16px;
+    padding: 8px 12px;
+    border-radius: 999px;
+    background: rgba(0, 0, 0, 0.65);
+    color: #fff;
+    font: 14px/1.2 sans-serif;
+  }
 </style>
 </head>
 <body>
-<img src="/stream" alt="Live Display">
+<img id="stream" alt="Live Display">
+<div id="status" class="status">Connecting...</div>
+<script>
+  const img = document.getElementById("stream");
+  const status = document.getElementById("status");
+  let retryDelay = 1000;
+  let reconnectTimer = null;
+
+  function scheduleReconnect() {
+    if (reconnectTimer !== null) {
+      return;
+    }
+    status.textContent = "Disconnected. Reconnecting...";
+    reconnectTimer = setTimeout(connectStream, retryDelay);
+    retryDelay = Math.min(retryDelay * 2, 5000);
+  }
+
+  function connectStream() {
+    reconnectTimer = null;
+    status.textContent = "Connecting...";
+    img.src = "/stream?ts=" + Date.now();
+  }
+
+  img.onload = () => {
+    retryDelay = 1000;
+    status.textContent = "";
+  };
+
+  img.onerror = () => {
+    img.removeAttribute("src");
+    scheduleReconnect();
+  };
+
+  window.addEventListener("online", connectStream);
+  connectStream();
+</script>
 </body>
 </html>"""
 
