@@ -1,6 +1,11 @@
 """CCFII Display Share — Mirror a Windows display over LAN via MJPEG."""
 
 import threading
+import sys
+import ctypes
+import subprocess
+import argparse
+import socket
 
 JPEG_SOI = b"\xff\xd8"
 JPEG_EOI = b"\xff\xd9"
@@ -141,3 +146,139 @@ class StreamHandler(BaseHTTPRequestHandler):
 
     def log_message(self, format, *args):
         pass  # silence per-request logs
+
+
+def list_monitors():
+    """Return list of monitors with physical pixel coordinates."""
+    if sys.platform == "win32":
+        ctypes.windll.user32.SetProcessDPIAware()
+    from screeninfo import get_monitors
+    return get_monitors()
+
+
+def choose_monitor(monitors):
+    """Present monitors in console and let user pick one."""
+    print("\nAvailable displays:\n")
+    for i, m in enumerate(monitors):
+        print(f"  [{i + 1}] {m.name or 'Display'} — "
+              f"{m.width}x{m.height} at ({m.x}, {m.y})")
+    print()
+    while True:
+        try:
+            choice = int(input(f"Select display (1-{len(monitors)}): "))
+            if 1 <= choice <= len(monitors):
+                return monitors[choice - 1]
+        except (ValueError, EOFError):
+            pass
+        print("Invalid choice, try again.")
+
+
+def start_ffmpeg(monitor, fps: int, quality: int) -> subprocess.Popen:
+    """Launch FFmpeg to capture the given monitor as MJPEG to stdout."""
+    cmd = [
+        "ffmpeg",
+        "-f", "gdigrab",
+        "-framerate", str(fps),
+        "-offset_x", str(monitor.x),
+        "-offset_y", str(monitor.y),
+        "-video_size", f"{monitor.width}x{monitor.height}",
+        "-i", "desktop",
+        "-f", "mjpeg",
+        "-q:v", str(quality),
+        "-an",
+        "-"
+    ]
+    proc = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        bufsize=0,
+    )
+    return proc
+
+
+def ffmpeg_reader(proc: subprocess.Popen, buffer: FrameBuffer,
+                  shutdown_event: threading.Event):
+    """Read FFmpeg stdout, extract frames, push to buffer. Runs in thread."""
+    leftover = b""
+    while True:
+        chunk = proc.stdout.read(65536)
+        if not chunk:
+            break
+        leftover += chunk
+        frames, leftover = extract_frames(leftover)
+        for frame in frames:
+            buffer.update(frame)
+    print("\n[!] FFmpeg process exited unexpectedly.")
+    shutdown_event.set()
+
+
+def get_lan_ip() -> str:
+    """Get this machine's LAN IP address."""
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except Exception:
+        return "127.0.0.1"
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Share a display over the local network.")
+    parser.add_argument("--port", type=int, default=8080,
+                        help="HTTP server port (default: 8080)")
+    parser.add_argument("--fps", type=int, default=30,
+                        help="Capture framerate (default: 30)")
+    parser.add_argument("--quality", type=int, default=5,
+                        help="JPEG quality 1-31, lower=better (default: 5)")
+    args = parser.parse_args()
+
+    monitors = list_monitors()
+    if not monitors:
+        print("No displays found.")
+        sys.exit(1)
+
+    monitor = choose_monitor(monitors)
+    print(f"\nCapturing: {monitor.width}x{monitor.height} "
+          f"at ({monitor.x}, {monitor.y}) @ {args.fps}fps\n")
+
+    frame_buffer = FrameBuffer()
+    shutdown_event = threading.Event()
+
+    proc = start_ffmpeg(monitor, args.fps, args.quality)
+
+    reader_thread = threading.Thread(
+        target=ffmpeg_reader, args=(proc, frame_buffer, shutdown_event),
+        daemon=True)
+    reader_thread.start()
+
+    # Monitor for unexpected FFmpeg exit in a background thread
+    def watch_shutdown():
+        shutdown_event.wait()
+        print("[!] Initiating shutdown due to FFmpeg exit...")
+        server.shutdown()
+
+    threading.Thread(target=watch_shutdown, daemon=True).start()
+
+    StreamHandler.frame_buffer = frame_buffer
+    server = ThreadingHTTPServer(("0.0.0.0", args.port), StreamHandler)
+
+    lan_ip = get_lan_ip()
+    print(f"Stream live at http://{lan_ip}:{args.port}")
+    print("Press Ctrl+C to stop.\n")
+
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        print("\nShutting down...")
+    finally:
+        proc.terminate()
+        proc.wait()
+        server.shutdown()
+
+
+if __name__ == "__main__":
+    main()
