@@ -32,6 +32,23 @@ That script will:
 - build `CCFIIDisplayShare.exe`
 - compile the Inno Setup installer
 
+## Project Structure
+
+The real application code lives in `ccfii_display_share/`:
+
+- `capture.py`: display discovery and FFmpeg capture lifecycle
+- `streaming.py`: MJPEG parsing, frame buffering, and HTTP streaming
+- `manager.py`: broadcast orchestration and runtime state
+- `desktop.py`: branded desktop operator UI
+- `cli.py`: legacy console workflow
+- `launcher.py`: packaged launch entrypoint
+
+The root folder is intentionally kept minimal:
+
+- `run.bat`, `run.pyw`, `launcher.py`: Windows launch wrappers
+- `desktop_app.py`, `server.py`: compatibility shims for packaging and legacy imports
+- `CCFIIDisplayShare.spec`, `build_installer.ps1`, `installer/`: packaging assets
+
 ## Operator Flow
 
 - Open the desktop app

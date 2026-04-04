@@ -116,10 +116,11 @@ class TestStartupBehavior(unittest.TestCase):
 
         self.assertEqual(fake_server.shutdown_calls, 1)
 
-    def test_install_script_uses_python_module_pip(self):
-        install_script = (ROOT / "install.bat").read_text()
+    def test_server_module_is_compatibility_wrapper(self):
+        server_wrapper = (ROOT / "server.py").read_text()
 
-        self.assertIn("python -m pip install -r requirements.txt", install_script)
+        self.assertIn("from ccfii_display_share import", server_wrapper)
+        self.assertIn("cli_main", server_wrapper)
 
     def test_run_script_launches_desktop_entrypoint(self):
         run_script = (ROOT / "run.bat").read_text()
@@ -262,7 +263,7 @@ class TestStartupBehavior(unittest.TestCase):
         def fake_stop(proc):
             stop_calls.append(proc)
 
-        with patch("server.choose_capture_target", return_value=selected_monitor):
+        with patch("ccfii_display_share.capture.choose_capture_target", return_value=selected_monitor):
             controller = server.CaptureController(
                 monitors=[first_monitor, selected_monitor],
                 fps=15,
