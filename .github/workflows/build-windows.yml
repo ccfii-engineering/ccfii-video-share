@@ -1,0 +1,54 @@
+name: Build Windows App
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+  pull_request:
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+          python -m pip install pyinstaller pytest
+
+      - name: Install Inno Setup
+        run: choco install innosetup --no-progress -y
+
+      - name: Run tests
+        run: |
+          python -m pytest tests/test_frame_parser.py -q
+          python -m pytest tests/test_startup.py -q
+          python -m pytest tests/test_desktop_app.py -q
+
+      - name: Build Windows installer
+        shell: pwsh
+        run: ./build_installer.ps1
+
+      - name: Upload packaged app folder
+        uses: actions/upload-artifact@v4
+        with:
+          name: CCFIIDisplayShare-windows-app
+          path: dist/CCFIIDisplayShare/**
+          if-no-files-found: error
+
+      - name: Upload Windows installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: CCFIIDisplayShare-windows-installer
+          path: Output/CCFIIDisplayShareInstaller.exe
+          if-no-files-found: error

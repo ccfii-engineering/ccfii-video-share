@@ -1,9 +1,10 @@
 @echo off
-echo Starting Display Share...
+echo Starting CCFII Display Share...
 echo.
-python server.py %*
+pythonw run.pyw %*
 if %errorlevel% neq 0 (
     echo.
-    echo [!] Server exited with an error.
+    echo [!] Desktop app could not start. Falling back to CLI mode...
+    python launcher.py --cli %*
 )
 pause

@@ -1,6 +1,6 @@
 @echo off
 echo ============================================
-echo   CCFII Display Share — Installer
+echo   CCFII Display Share — Development Setup
 echo ============================================
 echo.
 
@@ -39,7 +39,8 @@ if %errorlevel% neq 0 (
 
 echo.
 echo ============================================
-echo   Installation complete!
-echo   Run "run.bat" to start sharing.
+echo   Setup complete!
+echo   Use "run.bat" for local testing.
+echo   Use "build_installer.ps1" on Windows to create the installer package.
 echo ============================================
 pause

@@ -8,9 +8,12 @@ import argparse
 import socket
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import urlsplit
 
 JPEG_SOI = b"\xff\xd8"
 JPEG_EOI = b"\xff\xd9"
+STREAM_WAIT_TIMEOUT = 2.0
+STREAM_IDLE_RETRIES = 3
 
 
 @dataclass(frozen=True)
@@ -24,6 +27,7 @@ class CaptureTarget:
     width: int | None = None
     height: int | None = None
     hwnd: int | None = None
+    title: str | None = None
 
     @classmethod
     def desktop(cls, monitor):
@@ -44,8 +48,9 @@ class CaptureTarget:
         return cls(
             kind="window",
             label=f"Window: {title}",
-            input_name=f"hwnd={hwnd}",
+            input_name=f"title={title}",
             hwnd=hwnd,
+            title=title,
         )
 
 
@@ -115,6 +120,11 @@ class FrameBuffer:
             self._viewer_count -= 1
             count = self._viewer_count
         print(f"[-] Viewer disconnected ({count} active)")
+
+    @property
+    def viewer_count(self) -> int:
+        with self._viewer_lock:
+            return self._viewer_count
 
 
 VIEWER_HTML = b"""<!DOCTYPE html>
@@ -186,9 +196,10 @@ class StreamHandler(BaseHTTPRequestHandler):
     BOUNDARY = b"frame"
 
     def do_GET(self):
-        if self.path == "/":
+        route = urlsplit(self.path).path
+        if route == "/":
             self._serve_viewer()
-        elif self.path == "/stream":
+        elif route == "/stream":
             self._serve_stream()
         else:
             self.send_error(404)
@@ -208,12 +219,17 @@ class StreamHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.frame_buffer.add_viewer()
         last_version = 0
+        idle_retries = 0
         try:
             while True:
                 frame, last_version = self.frame_buffer.wait_for_new_frame(
-                    last_version, timeout=2.0)
+                    last_version, timeout=STREAM_WAIT_TIMEOUT)
                 if frame is None:
+                    idle_retries += 1
+                    if idle_retries >= STREAM_IDLE_RETRIES:
+                        break
                     continue
+                idle_retries = 0
                 self.wfile.write(b"--frame\r\n")
                 self.wfile.write(b"Content-Type: image/jpeg\r\n")
                 self.wfile.write(f"Content-Length: {len(frame)}\r\n".encode())
@@ -463,6 +479,91 @@ class CaptureController:
         self.stop_capture()
         self.start_capture(monitor)
         print("[*] Capture source switched. Viewers stay connected on the same URL.")
+
+
+class BroadcastManager:
+    """Programmatic lifecycle manager for display sharing."""
+
+    def __init__(self, targets, port: int, fps: int, quality: int,
+                 handler_class=StreamHandler,
+                 controller_factory=CaptureController,
+                 server_factory=ThreadingHTTPServer,
+                 shutdown_watcher_fn=start_shutdown_watcher,
+                 lan_ip_fn=None):
+        self.targets = targets
+        self.port = port
+        self.fps = fps
+        self.quality = quality
+        self.handler_class = handler_class
+        self.controller_factory = controller_factory
+        self.server_factory = server_factory
+        self.shutdown_watcher_fn = shutdown_watcher_fn
+        self.lan_ip_fn = lan_ip_fn or get_lan_ip
+        self.frame_buffer = FrameBuffer()
+        self.shutdown_event = threading.Event()
+        self.controller = controller_factory(
+            monitors=targets,
+            fps=fps,
+            quality=quality,
+            frame_buffer=self.frame_buffer,
+            shutdown_event=self.shutdown_event,
+        )
+        self.server = None
+        self._server_thread = None
+        self._watcher_thread = None
+        self._is_running = False
+        self._lock = threading.Lock()
+
+    def start(self, target: CaptureTarget):
+        with self._lock:
+            if self._is_running:
+                return
+            self.shutdown_event.clear()
+            self.controller.start_capture(target)
+            self.handler_class.frame_buffer = self.frame_buffer
+            self.server = self.server_factory(("0.0.0.0", self.port),
+                                              self.handler_class)
+            self._watcher_thread = self.shutdown_watcher_fn(
+                self.shutdown_event, self.server)
+            self._server_thread = threading.Thread(
+                target=self.server.serve_forever,
+                daemon=True,
+            )
+            self._server_thread.start()
+            self._is_running = True
+
+    def stop(self):
+        with self._lock:
+            if not self._is_running:
+                return
+            self.shutdown_event.set()
+            self.controller.stop_capture()
+            if self.server is not None:
+                self.server.shutdown()
+            server_thread = self._server_thread
+            self._server_thread = None
+            self.server = None
+            self._is_running = False
+        if server_thread is not None and server_thread.is_alive():
+            server_thread.join(timeout=5)
+
+    def switch_target(self, target: CaptureTarget):
+        if not self._is_running:
+            self.start(target)
+            return
+        self.controller.stop_capture()
+        self.controller.start_capture(target)
+
+    def get_status(self) -> dict[str, object]:
+        current_target = self.controller.current_monitor
+        return {
+            "is_running": self._is_running,
+            "viewer_count": self.frame_buffer.viewer_count,
+            "viewer_url": f"http://{self.lan_ip_fn()}:{self.port}",
+            "target_label": current_target.label if current_target else "",
+            "fps": self.fps,
+            "quality": self.quality,
+        }
 
 
 def handle_runtime_command(command: str, controller: CaptureController,

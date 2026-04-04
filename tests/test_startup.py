@@ -1,5 +1,6 @@
 """Tests for startup and installation behavior."""
 
+import importlib
 from io import BytesIO
 from pathlib import Path
 import threading
@@ -36,6 +37,22 @@ class FakeProcess:
 
 
 class TestStartupBehavior(unittest.TestCase):
+    def test_application_package_exports_core_runtime_symbols(self):
+        package = importlib.import_module("ccfii_display_share")
+
+        self.assertTrue(hasattr(package, "BroadcastManager"))
+        self.assertTrue(hasattr(package, "CaptureTarget"))
+        self.assertTrue(hasattr(package, "FrameBuffer"))
+
+    def test_frame_buffer_reports_viewer_count(self):
+        frame_buffer = server.FrameBuffer()
+
+        frame_buffer.add_viewer()
+        frame_buffer.add_viewer()
+        frame_buffer.remove_viewer()
+
+        self.assertEqual(frame_buffer.viewer_count, 1)
+
     def test_ffmpeg_reader_reports_stderr_details(self):
         proc = FakeProcess(stderr_data=b"Unknown input format: gdigrab")
         buffer = server.FrameBuffer()
@@ -70,13 +87,13 @@ class TestStartupBehavior(unittest.TestCase):
         self.assertIn("desktop", cmd)
 
     @patch("server.subprocess.Popen")
-    def test_start_ffmpeg_uses_window_hwnd_for_window_target(self, mock_popen):
+    def test_start_ffmpeg_uses_window_title_for_window_target(self, mock_popen):
         target = server.CaptureTarget.window(12345, "Notepad")
 
         server.start_ffmpeg(target, fps=30, quality=5)
 
         cmd = mock_popen.call_args.args[0]
-        self.assertIn("hwnd=12345", cmd)
+        self.assertIn("title=Notepad", cmd)
         self.assertNotIn("-offset_x", cmd)
         self.assertNotIn("-offset_y", cmd)
         self.assertNotIn("-video_size", cmd)
@@ -104,6 +121,36 @@ class TestStartupBehavior(unittest.TestCase):
 
         self.assertIn("python -m pip install -r requirements.txt", install_script)
 
+    def test_run_script_launches_desktop_entrypoint(self):
+        run_script = (ROOT / "run.bat").read_text()
+
+        self.assertIn("run.pyw", run_script)
+
+    def test_launcher_defaults_to_desktop_mode(self):
+        launcher_script = (ROOT / "launcher.py").read_text()
+
+        self.assertIn("ccfii_display_share.launcher", launcher_script)
+        self.assertIn("main", launcher_script)
+
+    def test_pyinstaller_spec_references_desktop_app_and_logo(self):
+        spec_file = (ROOT / "CCFIIDisplayShare.spec").read_text()
+
+        self.assertIn("desktop_app.py", spec_file)
+        self.assertIn("assets/ccfii-logo.png", spec_file)
+
+    def test_inno_setup_script_uses_ccfii_branding(self):
+        setup_script = (ROOT / "installer" / "CCFIIDisplayShare.iss").read_text()
+
+        self.assertIn("CCFII Display Share", setup_script)
+        self.assertIn("CCFIIDisplayShare.exe", setup_script)
+
+    def test_github_actions_workflow_builds_windows_artifacts(self):
+        workflow = (ROOT / ".github" / "workflows" / "build-windows.yml").read_text()
+
+        self.assertIn("windows-latest", workflow)
+        self.assertIn("upload-artifact", workflow)
+        self.assertIn("build_installer.ps1", workflow)
+
     def test_stream_handler_ignores_connection_aborted_on_disconnect(self):
         frame_buffer = server.FrameBuffer()
         frame_buffer.update(b"\xff\xd8frame\xff\xd9")
@@ -121,12 +168,58 @@ class TestStartupBehavior(unittest.TestCase):
 
         handler._serve_stream()
 
+    def test_stream_handler_stops_stale_stream_to_allow_client_reconnect(self):
+        class FakeFrameBuffer:
+            def __init__(self):
+                self.wait_calls = 0
+
+            def add_viewer(self):
+                pass
+
+            def remove_viewer(self):
+                pass
+
+            def wait_for_new_frame(self, _last_version, timeout=2.0):
+                self.wait_calls += 1
+                return None, 0
+
+        class FakeWriter:
+            def __init__(self):
+                self.chunks = []
+
+            def write(self, data):
+                self.chunks.append(data)
+
+        handler = server.StreamHandler.__new__(server.StreamHandler)
+        handler.frame_buffer = FakeFrameBuffer()
+        handler.wfile = FakeWriter()
+        handler.send_response = lambda _code: None
+        handler.send_header = lambda _name, _value: None
+        handler.end_headers = lambda: None
+
+        handler._serve_stream()
+
+        self.assertEqual(handler.frame_buffer.wait_calls, server.STREAM_IDLE_RETRIES)
+
     def test_viewer_html_retries_stream_after_disconnect(self):
         html = server.VIEWER_HTML.decode("utf-8")
 
         self.assertIn("setTimeout(connectStream", html)
         self.assertIn("/stream?ts=", html)
         self.assertIn("img.onerror", html)
+
+    def test_do_get_routes_stream_requests_with_query_string(self):
+        called = []
+
+        handler = server.StreamHandler.__new__(server.StreamHandler)
+        handler.path = "/stream?ts=123"
+        handler._serve_viewer = lambda: called.append("viewer")
+        handler._serve_stream = lambda: called.append("stream")
+        handler.send_error = lambda code: called.append(f"error:{code}")
+
+        handler.do_GET()
+
+        self.assertEqual(called, ["stream"])
 
     def test_handle_command_switches_display_on_d(self):
         switch_calls = []
@@ -191,6 +284,113 @@ class TestStartupBehavior(unittest.TestCase):
             (selected_monitor, 15, 4),
         ])
         self.assertEqual(stop_calls, [initial_proc])
+
+    def test_broadcast_manager_starts_server_and_exposes_status(self):
+        selected_target = server.CaptureTarget.desktop(FakeMonitor())
+        capture_starts = []
+        capture_stops = []
+
+        class FakeController:
+            def __init__(self, **kwargs):
+                self.kwargs = kwargs
+                self.current_monitor = None
+
+            def start_capture(self, target):
+                capture_starts.append(target)
+                self.current_monitor = target
+
+            def stop_capture(self):
+                capture_stops.append(self.current_monitor)
+
+        class FakeServer:
+            def __init__(self, address, handler_cls):
+                self.address = address
+                self.handler_cls = handler_cls
+                self.serve_forever_calls = 0
+                self.shutdown_calls = 0
+
+            def serve_forever(self):
+                self.serve_forever_calls += 1
+
+            def shutdown(self):
+                self.shutdown_calls += 1
+
+        manager = server.BroadcastManager(
+            targets=[selected_target],
+            port=9090,
+            fps=25,
+            quality=6,
+            lan_ip_fn=lambda: "192.168.1.77",
+            controller_factory=lambda **kwargs: FakeController(**kwargs),
+            server_factory=lambda address, handler_cls: FakeServer(address, handler_cls),
+            shutdown_watcher_fn=lambda shutdown_event, http_server: None,
+        )
+
+        manager.start(selected_target)
+
+        status = manager.get_status()
+
+        self.assertEqual(capture_starts, [selected_target])
+        self.assertTrue(status["is_running"])
+        self.assertEqual(status["viewer_url"], "http://192.168.1.77:9090")
+        self.assertEqual(status["target_label"], selected_target.label)
+
+        manager.stop()
+
+        self.assertEqual(capture_stops, [selected_target])
+
+    def test_broadcast_manager_switch_target_restarts_capture(self):
+        first_target = server.CaptureTarget.desktop(FakeMonitor())
+        second_monitor = FakeMonitor()
+        second_monitor.name = "Display 2"
+        second_monitor.x = 100
+        second_monitor.y = 200
+        second_monitor.width = 1920
+        second_monitor.height = 1080
+        second_target = server.CaptureTarget.desktop(second_monitor)
+        events = []
+
+        class FakeController:
+            def __init__(self, **kwargs):
+                self.current_monitor = None
+
+            def start_capture(self, target):
+                events.append(("start", target.label))
+                self.current_monitor = target
+
+            def stop_capture(self):
+                events.append(("stop", self.current_monitor.label))
+
+        class FakeServer:
+            def __init__(self, address, handler_cls):
+                self.address = address
+
+            def serve_forever(self):
+                return None
+
+            def shutdown(self):
+                return None
+
+        manager = server.BroadcastManager(
+            targets=[first_target, second_target],
+            port=8080,
+            fps=30,
+            quality=5,
+            lan_ip_fn=lambda: "10.0.0.10",
+            controller_factory=lambda **kwargs: FakeController(**kwargs),
+            server_factory=lambda address, handler_cls: FakeServer(address, handler_cls),
+            shutdown_watcher_fn=lambda shutdown_event, http_server: None,
+        )
+
+        manager.start(first_target)
+        manager.switch_target(second_target)
+
+        self.assertEqual(events, [
+            ("start", first_target.label),
+            ("stop", first_target.label),
+            ("start", second_target.label),
+        ])
+        self.assertEqual(manager.get_status()["target_label"], second_target.label)
 
 
 if __name__ == "__main__":
