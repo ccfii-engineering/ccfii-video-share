@@ -35,6 +35,9 @@ jobs:
       - name: Install Inno Setup
         run: choco install innosetup --no-progress -y
 
+      - name: Install FFmpeg
+        run: choco install ffmpeg --no-progress -y
+
       - name: Run tests
         run: |
           python -m pytest tests/test_frame_parser.py -q

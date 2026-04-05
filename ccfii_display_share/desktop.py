@@ -122,6 +122,106 @@ def calculate_logo_size(
     return calculate_preview_size(source_width, source_height, max_size, max_size)
 
 
+def build_stylesheet() -> str:
+    return f"""
+        QMainWindow {{
+            background: {APP_COLORS['background']};
+        }}
+        QWidget#appRoot, QWidget#headerTextWrap, QWidget#rightPanel {{
+            background: transparent;
+            color: {APP_COLORS['foreground']};
+            font-family: 'Segoe UI';
+            font-size: 14px;
+        }}
+        QLabel {{
+            background: transparent;
+            color: {APP_COLORS['foreground']};
+        }}
+        QFrame#card, QGroupBox {{
+            background: {APP_COLORS['surface']};
+            border: 1px solid {APP_COLORS['border']};
+            border-radius: 18px;
+        }}
+        QFrame#subCard {{
+            background: {APP_COLORS['surface_alt']};
+            border: 1px solid {APP_COLORS['border']};
+            border-radius: 16px;
+        }}
+        QLabel#eyebrow, QLabel#fieldLabel {{
+            color: {APP_COLORS['accent']};
+            font-weight: 700;
+            font-size: 12px;
+        }}
+        QLabel#title {{
+            font-size: 34px;
+            font-weight: 800;
+        }}
+        QLabel#subtitle, QLabel#bodyMuted {{
+            color: {APP_COLORS['muted']};
+        }}
+        QLabel#sectionTitle {{
+            font-size: 26px;
+            font-weight: 800;
+        }}
+        QLabel#bodyStrong, QLabel#metricValue {{
+            font-weight: 600;
+        }}
+        QLabel#statusBadge {{
+            background: {APP_COLORS['primary']};
+            color: {APP_COLORS['foreground']};
+            border-radius: 14px;
+            padding: 10px 18px;
+            min-width: 120px;
+        }}
+        QLabel#previewImage {{
+            background: {APP_COLORS['background']};
+            border-radius: 14px;
+            border: 1px solid {APP_COLORS['border']};
+            padding: 12px;
+        }}
+        QLineEdit, QComboBox {{
+            background: {APP_COLORS['background']};
+            border: 1px solid {APP_COLORS['border']};
+            border-radius: 12px;
+            padding: 10px 12px;
+            min-height: 22px;
+        }}
+        QPushButton {{
+            background: {APP_COLORS['primary']};
+            color: {APP_COLORS['foreground']};
+            border: none;
+            border-radius: 12px;
+            padding: 12px 18px;
+            font-weight: 700;
+        }}
+        QPushButton[secondary="true"] {{
+            background: {APP_COLORS['surface_alt']};
+            border: 1px solid {APP_COLORS['border']};
+        }}
+        QPushButton[accent="true"] {{
+            background: {APP_COLORS['accent']};
+            color: #2d1408;
+        }}
+        QPushButton[compact="true"] {{
+            padding: 8px 12px;
+        }}
+        QPushButton#primaryButton {{
+            padding: 16px 20px;
+            font-size: 16px;
+        }}
+        QGroupBox {{
+            margin-top: 16px;
+            padding-top: 18px;
+            font-weight: 700;
+        }}
+        QGroupBox::title {{
+            subcontrol-origin: margin;
+            left: 16px;
+            padding: 0 6px;
+        }}
+    """
+
+
 class DisplayShareDesktopApp(QMainWindow):
     """Responsive Qt desktop operator console."""
 
@@ -147,6 +247,7 @@ class DisplayShareDesktopApp(QMainWindow):
 
     def _build_ui(self):
         root = QWidget()
+        root.setObjectName("appRoot")
         self.setCentralWidget(root)
         outer = QVBoxLayout(root)
         outer.setContentsMargins(24, 24, 24, 24)
@@ -156,10 +257,12 @@ class DisplayShareDesktopApp(QMainWindow):
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.setChildrenCollapsible(False)
+        splitter.setOpaqueResize(True)
         splitter.addWidget(self._build_left_panel())
         splitter.addWidget(self._build_right_panel())
         splitter.setStretchFactor(0, 3)
         splitter.setStretchFactor(1, 2)
+        splitter.setSizes([780, 500])
         outer.addWidget(splitter, 1)
 
     def _build_header(self):
@@ -178,6 +281,7 @@ class DisplayShareDesktopApp(QMainWindow):
         layout.addWidget(self.logo_label, 0, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
 
         text_wrap = QWidget()
+        text_wrap.setObjectName("headerTextWrap")
         text_layout = QVBoxLayout(text_wrap)
         text_layout.setContentsMargins(0, 0, 0, 0)
         text_layout.setSpacing(4)
@@ -249,8 +353,9 @@ class DisplayShareDesktopApp(QMainWindow):
         self.preview_image_label = QLabel("Preview not loaded yet.")
         self.preview_image_label.setObjectName("previewImage")
         self.preview_image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.preview_image_label.setMinimumHeight(220)
+        self.preview_image_label.setMinimumHeight(260)
         self.preview_image_label.setWordWrap(True)
+        self.preview_image_label.setScaledContents(False)
         self.preview_image_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         preview_layout.addWidget(self.preview_image_label, 1)
 
@@ -304,6 +409,7 @@ class DisplayShareDesktopApp(QMainWindow):
 
     def _build_right_panel(self):
         container = QWidget()
+        container.setObjectName("rightPanel")
         layout = QVBoxLayout(container)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(14)
@@ -377,98 +483,7 @@ class DisplayShareDesktopApp(QMainWindow):
         return button
 
     def _apply_styles(self):
-        self.setStyleSheet(
-            f"""
-            QWidget {{
-                background: {APP_COLORS['background']};
-                color: {APP_COLORS['foreground']};
-                font-family: 'Segoe UI';
-                font-size: 14px;
-            }}
-            QFrame#card, QGroupBox {{
-                background: {APP_COLORS['surface']};
-                border: 1px solid {APP_COLORS['border']};
-                border-radius: 18px;
-            }}
-            QFrame#subCard {{
-                background: {APP_COLORS['surface_alt']};
-                border: 1px solid {APP_COLORS['border']};
-                border-radius: 16px;
-            }}
-            QLabel#eyebrow, QLabel#fieldLabel {{
-                color: {APP_COLORS['accent']};
-                font-weight: 700;
-                font-size: 12px;
-            }}
-            QLabel#title {{
-                font-size: 34px;
-                font-weight: 800;
-            }}
-            QLabel#subtitle, QLabel#bodyMuted {{
-                color: {APP_COLORS['muted']};
-            }}
-            QLabel#sectionTitle {{
-                font-size: 26px;
-                font-weight: 800;
-            }}
-            QLabel#bodyStrong, QLabel#metricValue {{
-                font-weight: 600;
-            }}
-            QLabel#statusBadge {{
-                background: {APP_COLORS['primary']};
-                color: {APP_COLORS['foreground']};
-                border-radius: 14px;
-                padding: 10px 18px;
-                min-width: 120px;
-            }}
-            QLabel#previewImage {{
-                background: {APP_COLORS['background']};
-                border-radius: 14px;
-                border: 1px solid {APP_COLORS['border']};
-                padding: 12px;
-            }}
-            QLineEdit, QComboBox {{
-                background: {APP_COLORS['background']};
-                border: 1px solid {APP_COLORS['border']};
-                border-radius: 12px;
-                padding: 10px 12px;
-                min-height: 22px;
-            }}
-            QPushButton {{
-                background: {APP_COLORS['primary']};
-                color: {APP_COLORS['foreground']};
-                border: none;
-                border-radius: 12px;
-                padding: 12px 18px;
-                font-weight: 700;
-            }}
-            QPushButton[secondary="true"] {{
-                background: {APP_COLORS['surface_alt']};
-                border: 1px solid {APP_COLORS['border']};
-            }}
-            QPushButton[accent="true"] {{
-                background: {APP_COLORS['accent']};
-                color: #2d1408;
-            }}
-            QPushButton[compact="true"] {{
-                padding: 8px 12px;
-            }}
-            QPushButton#primaryButton {{
-                padding: 16px 20px;
-                font-size: 16px;
-            }}
-            QGroupBox {{
-                margin-top: 16px;
-                padding-top: 18px;
-                font-weight: 700;
-            }}
-            QGroupBox::title {{
-                subcontrol-origin: margin;
-                left: 16px;
-                padding: 0 6px;
-            }}
-            """
-        )
+        self.setStyleSheet(build_stylesheet())
 
     def _start_status_timer(self):
         self.status_timer = QTimer(self)

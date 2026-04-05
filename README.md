@@ -35,6 +35,7 @@ build.bat
 That script will:
 - install PyInstaller
 - generate an `.ico` from the CCFII logo if needed
+- install or resolve FFmpeg, then bundle `ffmpeg.exe` into the app
 - build `CCFIIDisplayShare.exe`
 - compile the Inno Setup installer
 

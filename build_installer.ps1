@@ -5,6 +5,8 @@ Set-Location $root
 
 $logoPng = Join-Path $root "assets\ccfii-logo.png"
 $logoIco = Join-Path $root "assets\ccfii-logo.ico"
+$bundledBinDir = Join-Path $root "bundled-bin"
+$bundledFfmpeg = Join-Path $bundledBinDir "ffmpeg.exe"
 
 function Install-InnoSetup {
     Write-Host "Inno Setup not found. Attempting to install it..."
@@ -22,12 +24,41 @@ function Install-InnoSetup {
     throw "Inno Setup 6 is required. Install it manually or add winget/choco to PATH."
 }
 
+function Install-FFmpeg {
+    Write-Host "FFmpeg not found. Attempting to install it..."
+
+    if (Get-Command winget -ErrorAction SilentlyContinue) {
+        winget install --id Gyan.FFmpeg --exact --accept-package-agreements --accept-source-agreements
+        return
+    }
+
+    if (Get-Command choco -ErrorAction SilentlyContinue) {
+        choco install ffmpeg --no-progress -y
+        return
+    }
+
+    throw "FFmpeg is required. Install it manually or add winget/choco to PATH."
+}
+
 Write-Host "Installing packaging dependencies..."
 python -m pip install pyinstaller pillow
 python -m pip install -r requirements.txt
 
 Write-Host "Generating ICO from PNG logo..."
 python -c "from PIL import Image; img = Image.open(r'$logoPng').convert('RGBA'); img.save(r'$logoIco', format='ICO', sizes=[(256,256),(128,128),(64,64),(48,48),(32,32),(16,16)])"
+
+$ffmpegCommand = Get-Command ffmpeg -ErrorAction SilentlyContinue
+if (-not $ffmpegCommand) {
+    Install-FFmpeg
+    $ffmpegCommand = Get-Command ffmpeg -ErrorAction SilentlyContinue
+}
+
+if (-not $ffmpegCommand) {
+    throw "FFmpeg could not be found after installation."
+}
+
+New-Item -ItemType Directory -Force -Path $bundledBinDir | Out-Null
+Copy-Item $ffmpegCommand.Source $bundledFfmpeg -Force
 
 Write-Host "Building desktop executable..."
 python -m PyInstaller CCFIIDisplayShare.spec --noconfirm

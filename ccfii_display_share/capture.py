@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ctypes
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import threading
@@ -114,9 +115,43 @@ def choose_monitor(monitors):
     return choose_capture_target([CaptureTarget.desktop(m) for m in monitors])
 
 
+def resolve_ffmpeg_command(
+    packaged_path: str | Path | None = None,
+    path_lookup=shutil.which,
+) -> str:
+    """Resolve the ffmpeg executable from bundled or system locations."""
+    candidates: list[Path] = []
+    if packaged_path is not None:
+        candidates.append(Path(packaged_path))
+
+    executable_dir = Path(sys.executable).resolve().parent
+    module_root = Path(__file__).resolve().parents[1]
+    candidates.extend([
+        executable_dir / "ffmpeg.exe",
+        executable_dir / "bundled-bin" / "ffmpeg.exe",
+        module_root / "bundled-bin" / "ffmpeg.exe",
+    ])
+
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        candidates.extend([
+            Path(meipass) / "ffmpeg.exe",
+            Path(meipass) / "bundled-bin" / "ffmpeg.exe",
+        ])
+
+    for candidate in candidates:
+        if candidate.exists():
+            return str(candidate)
+
+    system_ffmpeg = path_lookup("ffmpeg")
+    if system_ffmpeg:
+        return system_ffmpeg
+    return "ffmpeg"
+
+
 def start_ffmpeg(target: CaptureTarget, fps: int, quality: int) -> subprocess.Popen:
     cmd = [
-        "ffmpeg",
+        resolve_ffmpeg_command(),
         "-f", "gdigrab",
         "-framerate", str(fps),
     ]
@@ -144,7 +179,7 @@ def start_ffmpeg(target: CaptureTarget, fps: int, quality: int) -> subprocess.Po
 def build_preview_command(target: CaptureTarget, output_path: str | Path) -> list[str]:
     """Build a one-frame FFmpeg command for source preview snapshots."""
     cmd = [
-        "ffmpeg",
+        resolve_ffmpeg_command(),
         "-y",
         "-f", "gdigrab",
         "-framerate", "5",

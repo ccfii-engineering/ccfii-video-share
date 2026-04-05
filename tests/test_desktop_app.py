@@ -7,6 +7,7 @@ import server
 
 from desktop_app import (
     build_preview_caption,
+    build_stylesheet,
     calculate_preview_size,
     calculate_logo_size,
     build_status_text,
@@ -82,6 +83,13 @@ class DesktopAppHelpersTest(unittest.TestCase):
         self.assertLessEqual(width, 180)
         self.assertLessEqual(height, 180)
         self.assertEqual(width, height)
+
+    def test_stylesheet_does_not_apply_background_to_every_widget(self):
+        stylesheet = build_stylesheet()
+
+        self.assertNotIn("QWidget {\n", stylesheet)
+        self.assertIn("QLabel {\n", stylesheet)
+        self.assertIn("background: transparent;", stylesheet)
 
 
 if __name__ == "__main__":

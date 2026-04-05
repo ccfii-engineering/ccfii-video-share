@@ -3,6 +3,7 @@
 import importlib
 from io import BytesIO
 from pathlib import Path
+import tempfile
 import threading
 import unittest
 from unittest.mock import patch
@@ -163,6 +164,8 @@ class TestStartupBehavior(unittest.TestCase):
         self.assertIn("desktop_app.py", spec_file)
         self.assertIn("assets/ccfii-logo.png", spec_file)
         self.assertIn("PySide6", spec_file)
+        self.assertNotIn('collect_submodules("PySide6")', spec_file)
+        self.assertIn("excludes", spec_file)
 
     def test_inno_setup_script_uses_ccfii_branding(self):
         setup_script = (ROOT / "installer" / "CCFIIDisplayShare.iss").read_text()
@@ -193,6 +196,18 @@ class TestStartupBehavior(unittest.TestCase):
         self.assertIn("pillow", build_script.lower())
         self.assertIn("JRSoftware.InnoSetup", build_script)
         self.assertIn("img.save", build_script)
+        self.assertIn("ffmpeg", build_script.lower())
+
+    def test_ffmpeg_binary_resolution_checks_packaged_location_first(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            packaged_path = Path(temp_dir) / "ffmpeg.exe"
+            packaged_path.write_bytes(b"fake")
+            command = server.resolve_ffmpeg_command(
+                packaged_path=packaged_path,
+                path_lookup=lambda _name: None,
+            )
+
+            self.assertEqual(command, str(packaged_path))
 
     def test_stream_handler_ignores_connection_aborted_on_disconnect(self):
         frame_buffer = server.FrameBuffer()
