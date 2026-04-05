@@ -4,6 +4,7 @@ import importlib
 from io import BytesIO
 from pathlib import Path
 import tempfile
+import time
 import threading
 import unittest
 from unittest.mock import patch
@@ -176,7 +177,9 @@ class TestStartupBehavior(unittest.TestCase):
     def test_github_actions_workflow_builds_windows_artifacts(self):
         workflow = (ROOT / ".github" / "workflows" / "build-windows.yml").read_text()
 
-        self.assertIn("windows-latest", workflow)
+        self.assertTrue(
+            "windows-latest" in workflow or "blacksmith-4vcpu-windows-2025" in workflow
+        )
         self.assertIn("gh release create", workflow)
         self.assertIn("contents: write", workflow)
         self.assertIn("build_installer.ps1", workflow)
@@ -366,12 +369,15 @@ class TestStartupBehavior(unittest.TestCase):
                 self.handler_cls = handler_cls
                 self.serve_forever_calls = 0
                 self.shutdown_calls = 0
+                self.shutdown_event = threading.Event()
 
             def serve_forever(self):
                 self.serve_forever_calls += 1
+                self.shutdown_event.wait(timeout=1)
 
             def shutdown(self):
                 self.shutdown_calls += 1
+                self.shutdown_event.set()
 
         manager = server.BroadcastManager(
             targets=[selected_target],
@@ -385,6 +391,7 @@ class TestStartupBehavior(unittest.TestCase):
         )
 
         manager.start(selected_target)
+        time.sleep(0.01)
 
         status = manager.get_status()
 

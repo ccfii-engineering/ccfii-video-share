@@ -99,6 +99,11 @@ class BroadcastManager:
         if server_thread is not None and server_thread.is_alive():
             server_thread.join(timeout=5)
 
+    def is_healthy(self) -> bool:
+        server_thread = self._server_thread
+        server_alive = server_thread is not None and server_thread.is_alive()
+        return self._is_running and not self.shutdown_event.is_set() and server_alive
+
     def switch_target(self, target: CaptureTarget):
         if not self._is_running:
             self.start(target)
@@ -108,13 +113,17 @@ class BroadcastManager:
 
     def get_status(self) -> dict[str, object]:
         current_target = self.controller.current_monitor
+        ffmpeg_error = getattr(self.shutdown_event, "ffmpeg_error", "") or ""
+        is_running = self.is_healthy()
         return {
-            "is_running": self._is_running,
+            "is_running": is_running,
+            "backend_running": self._is_running,
             "viewer_count": self.frame_buffer.viewer_count,
             "viewer_url": f"http://{self.lan_ip_fn()}:{self.port}",
             "target_label": current_target.label if current_target else "",
             "fps": self.fps,
             "quality": self.quality,
+            "error": ffmpeg_error,
         }
 
 

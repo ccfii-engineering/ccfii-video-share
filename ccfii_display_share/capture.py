@@ -149,6 +149,20 @@ def resolve_ffmpeg_command(
     return "ffmpeg"
 
 
+def build_subprocess_window_kwargs() -> dict[str, object]:
+    """Hide FFmpeg console windows when running as a GUI app on Windows."""
+    if sys.platform != "win32":
+        return {}
+
+    kwargs: dict[str, object] = {
+        "creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    }
+    startupinfo = subprocess.STARTUPINFO()
+    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    kwargs["startupinfo"] = startupinfo
+    return kwargs
+
+
 def start_ffmpeg(target: CaptureTarget, fps: int, quality: int) -> subprocess.Popen:
     cmd = [
         resolve_ffmpeg_command(),
@@ -173,6 +187,7 @@ def start_ffmpeg(target: CaptureTarget, fps: int, quality: int) -> subprocess.Po
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         bufsize=0,
+        **build_subprocess_window_kwargs(),
     )
 
 
@@ -209,6 +224,7 @@ def capture_preview_image(target: CaptureTarget, output_path: str | Path) -> Pat
         stdout=subprocess.DEVNULL,
         stderr=subprocess.PIPE,
         text=True,
+        **build_subprocess_window_kwargs(),
     )
     return output
 
@@ -255,6 +271,7 @@ def ffmpeg_reader(proc: subprocess.Popen, buffer: FrameBuffer,
     if stop_event is not None and stop_event.is_set():
         return
     stderr_details = read_ffmpeg_stderr(proc)
+    setattr(shutdown_event, "ffmpeg_error", stderr_details)
     print("\n[!] FFmpeg process exited unexpectedly.")
     if stderr_details:
         print(stderr_details)
@@ -302,6 +319,7 @@ class CaptureController:
 
     def start_capture(self, monitor):
         proc = self._start_ffmpeg(monitor, self.fps, self.quality)
+        setattr(self.shutdown_event, "ffmpeg_error", "")
         stop_event = threading.Event()
         reader_thread = self._start_reader(
             proc, self.frame_buffer, self.shutdown_event, stop_event)

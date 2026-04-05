@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
 import tempfile
 
@@ -19,6 +20,7 @@ try:
         QLineEdit,
         QMainWindow,
         QMessageBox,
+        QPlainTextEdit,
         QPushButton,
         QSizePolicy,
         QSplitter,
@@ -39,6 +41,7 @@ except ModuleNotFoundError:  # pragma: no cover - depends on local Python build
     QLineEdit = None
     QMainWindow = object
     QMessageBox = None
+    QPlainTextEdit = None
     QPushButton = None
     QPixmap = None
     QSizePolicy = None
@@ -77,6 +80,13 @@ def parse_int_setting(raw_value: str, default: int,
 
 
 def build_status_text(status: dict[str, object]) -> str:
+    error_text = str(status.get("error") or "").strip()
+    if error_text:
+        return (
+            "Broadcast stopped because capture failed.\n"
+            "Review the diagnostics panel for FFmpeg details, then refresh the source or restart the broadcast."
+        )
+
     if not status.get("is_running"):
         return "Ready to broadcast. Select a source and start sharing to the local network."
 
@@ -179,12 +189,16 @@ def build_stylesheet() -> str:
             border: 1px solid {APP_COLORS['border']};
             padding: 12px;
         }}
-        QLineEdit, QComboBox {{
+        QLineEdit, QComboBox, QPlainTextEdit {{
             background: {APP_COLORS['background']};
             border: 1px solid {APP_COLORS['border']};
             border-radius: 12px;
             padding: 10px 12px;
             min-height: 22px;
+        }}
+        QPlainTextEdit#diagnosticsOutput {{
+            font-family: 'Cascadia Mono';
+            font-size: 12px;
         }}
         QPushButton {{
             background: {APP_COLORS['primary']};
@@ -239,6 +253,8 @@ class DisplayShareDesktopApp(QMainWindow):
         self.preview_path = Path(tempfile.gettempdir()) / "ccfii-display-share-preview.png"
         self.preview_pixmap: QPixmap | None = None
         self.logo_pixmap: QPixmap | None = None
+        self.diagnostic_lines: list[str] = []
+        self._last_runtime_error = ""
 
         self._build_ui()
         self.refresh_targets(initial=True)
@@ -260,10 +276,11 @@ class DisplayShareDesktopApp(QMainWindow):
         splitter.setOpaqueResize(True)
         splitter.addWidget(self._build_left_panel())
         splitter.addWidget(self._build_right_panel())
-        splitter.setStretchFactor(0, 3)
-        splitter.setStretchFactor(1, 2)
-        splitter.setSizes([780, 500])
+        splitter.setStretchFactor(0, 2)
+        splitter.setStretchFactor(1, 3)
+        splitter.setSizes([460, 880])
         outer.addWidget(splitter, 1)
+        outer.addWidget(self._build_diagnostics_panel())
 
     def _build_header(self):
         card = self._card_frame()
@@ -337,38 +354,6 @@ class DisplayShareDesktopApp(QMainWindow):
         self.primary_button.setObjectName("primaryButton")
         layout.addWidget(self.primary_button)
 
-        preview_card = self._sub_card()
-        preview_layout = QVBoxLayout(preview_card)
-        preview_layout.setContentsMargins(16, 16, 16, 16)
-        preview_layout.setSpacing(10)
-
-        preview_header = QHBoxLayout()
-        preview_title = QLabel("Source Preview")
-        preview_title.setObjectName("fieldLabel")
-        preview_header.addWidget(preview_title)
-        preview_header.addStretch(1)
-        preview_header.addWidget(self._button("Refresh Preview", self.refresh_preview, secondary=True, compact=True))
-        preview_layout.addLayout(preview_header)
-
-        self.preview_image_label = QLabel("Preview not loaded yet.")
-        self.preview_image_label.setObjectName("previewImage")
-        self.preview_image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.preview_image_label.setMinimumHeight(260)
-        self.preview_image_label.setWordWrap(True)
-        self.preview_image_label.setScaledContents(False)
-        self.preview_image_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        preview_layout.addWidget(self.preview_image_label, 1)
-
-        self.preview_caption_label = QLabel(build_preview_caption(None))
-        self.preview_caption_label.setObjectName("bodyStrong")
-        self.preview_caption_label.setWordWrap(True)
-        self.preview_status_label = QLabel("Preview not loaded yet.")
-        self.preview_status_label.setObjectName("bodyMuted")
-        self.preview_status_label.setWordWrap(True)
-        preview_layout.addWidget(self.preview_caption_label)
-        preview_layout.addWidget(self.preview_status_label)
-        layout.addWidget(preview_card, 1)
-
         link_card = self._sub_card()
         link_layout = QVBoxLayout(link_card)
         link_layout.setContentsMargins(16, 16, 16, 16)
@@ -405,6 +390,7 @@ class DisplayShareDesktopApp(QMainWindow):
             adv_layout.addWidget(label, row, 0)
             adv_layout.addWidget(widget, row, 1)
         layout.addWidget(self.advanced_group)
+        layout.addStretch(1)
         return card
 
     def _build_right_panel(self):
@@ -413,6 +399,39 @@ class DisplayShareDesktopApp(QMainWindow):
         layout = QVBoxLayout(container)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(14)
+
+        preview_card = self._card_frame()
+        preview_layout = QVBoxLayout(preview_card)
+        preview_layout.setContentsMargins(20, 20, 20, 20)
+        preview_layout.setSpacing(12)
+
+        preview_header = QHBoxLayout()
+        preview_title = QLabel("Source Preview")
+        preview_title.setObjectName("sectionTitle")
+        preview_header.addWidget(preview_title)
+        preview_header.addStretch(1)
+        preview_header.addWidget(self._button("Refresh Preview", self.refresh_preview, secondary=True, compact=True))
+        preview_layout.addLayout(preview_header)
+
+        self.preview_caption_label = QLabel(build_preview_caption(None))
+        self.preview_caption_label.setObjectName("bodyStrong")
+        self.preview_caption_label.setWordWrap(True)
+        preview_layout.addWidget(self.preview_caption_label)
+
+        self.preview_image_label = QLabel("Preview not loaded yet.")
+        self.preview_image_label.setObjectName("previewImage")
+        self.preview_image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.preview_image_label.setMinimumHeight(360)
+        self.preview_image_label.setWordWrap(True)
+        self.preview_image_label.setScaledContents(False)
+        self.preview_image_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        preview_layout.addWidget(self.preview_image_label, 1)
+
+        self.preview_status_label = QLabel("Preview not loaded yet.")
+        self.preview_status_label.setObjectName("bodyMuted")
+        self.preview_status_label.setWordWrap(True)
+        preview_layout.addWidget(self.preview_status_label)
+        layout.addWidget(preview_card, 2)
 
         self.status_card = self._card_frame()
         status_layout = QVBoxLayout(self.status_card)
@@ -450,6 +469,28 @@ class DisplayShareDesktopApp(QMainWindow):
         layout.addWidget(notes, 1)
 
         return container
+
+    def _build_diagnostics_panel(self):
+        card = self._card_frame()
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(20, 18, 20, 18)
+        layout.setSpacing(12)
+
+        header = QHBoxLayout()
+        title = QLabel("Diagnostics")
+        title.setObjectName("sectionTitle")
+        header.addWidget(title)
+        header.addStretch(1)
+        header.addWidget(self._button("Copy Diagnostics", self.copy_diagnostics, secondary=True, compact=True))
+        layout.addLayout(header)
+
+        self.diagnostics_output = QPlainTextEdit()
+        self.diagnostics_output.setObjectName("diagnosticsOutput")
+        self.diagnostics_output.setReadOnly(True)
+        self.diagnostics_output.setMinimumHeight(160)
+        self.diagnostics_output.setPlaceholderText("Runtime logs will appear here.")
+        layout.addWidget(self.diagnostics_output)
+        return card
 
     def _metric(self, layout: QVBoxLayout, label: str, value: str):
         title = QLabel(label)
@@ -495,6 +536,7 @@ class DisplayShareDesktopApp(QMainWindow):
             monitors = list_monitors()
             windows = list_windows()
         except Exception as exc:
+            self._log(f"Source refresh failed: {exc}")
             if not initial and QMessageBox is not None:
                 QMessageBox.critical(self, APP_NAME, f"Unable to refresh sources.\n\n{exc}")
             return
@@ -511,6 +553,7 @@ class DisplayShareDesktopApp(QMainWindow):
             index = max(0, labels.index(current)) if current in labels else 0
             self.source_combo.setCurrentIndex(index)
         self.source_combo.blockSignals(False)
+        self._log(f"Loaded {len(monitors)} displays and {len(windows)} windows.")
         self.refresh_preview()
 
     def _selected_target(self) -> CaptureTarget | None:
@@ -527,15 +570,21 @@ class DisplayShareDesktopApp(QMainWindow):
             return
 
         try:
+            self._log(f"Refreshing preview for {target.label}")
             preview_file = capture_preview_image(target, self.preview_path)
             self.preview_pixmap = QPixmap(str(preview_file))
             self._render_preview()
             self.preview_status_label.setText("Snapshot ready. Confirm the source, then switch or start the broadcast.")
+            self._log(f"Preview ready for {target.label}")
         except Exception as exc:
             self.preview_pixmap = None
             self.preview_image_label.setPixmap(QPixmap())
             self.preview_image_label.setText("Preview unavailable")
-            self.preview_status_label.setText(f"Unable to capture preview right now: {exc}")
+            error_message = str(exc).strip()
+            if hasattr(exc, "stderr") and exc.stderr:
+                error_message = str(exc.stderr).strip()
+            self.preview_status_label.setText(f"Unable to capture preview right now: {error_message}")
+            self._log(f"Preview failed for {target.label}: {error_message}")
 
     def _render_preview(self):
         if self.preview_pixmap is None or self.preview_pixmap.isNull():
@@ -579,10 +628,13 @@ class DisplayShareDesktopApp(QMainWindow):
         self._render_preview()
 
     def toggle_broadcast(self):
-        if self.manager and self.manager.get_status()["is_running"]:
+        if self.manager is not None:
+            status = self.manager.get_status()
+            if status["is_running"]:
+                self.stop_broadcast()
+                return
             self.stop_broadcast()
-        else:
-            self.start_broadcast()
+        self.start_broadcast()
 
     def start_broadcast(self):
         target = self._selected_target()
@@ -607,9 +659,11 @@ class DisplayShareDesktopApp(QMainWindow):
             self.manager.start(target)
         except Exception as exc:
             self.manager = None
+            self._log(f"Broadcast start failed: {exc}")
             QMessageBox.critical(self, APP_NAME, f"Unable to start the broadcast.\n\n{exc}")
             return
 
+        self._log(f"Broadcast started for {target.label} on http://{self.manager.lan_ip_fn()}:{port}")
         self.primary_button.setText("Stop Broadcast")
         self.primary_button.setProperty("accent", True)
         self.primary_button.style().unpolish(self.primary_button)
@@ -621,6 +675,7 @@ class DisplayShareDesktopApp(QMainWindow):
     def stop_broadcast(self):
         if self.manager is None:
             return
+        self._log("Broadcast stopped by operator.")
         self.manager.stop()
         self.manager = None
         self.primary_button.setText("Start Broadcast")
@@ -641,6 +696,24 @@ class DisplayShareDesktopApp(QMainWindow):
         if QGuiApplication is not None:
             QGuiApplication.clipboard().setText(value)
         self.status_badge.setText("Status: Link Copied")
+        self._log(f"Viewer link copied: {value}")
+
+    def copy_diagnostics(self):
+        if QGuiApplication is None:
+            return
+        value = self.diagnostics_output.toPlainText()
+        QGuiApplication.clipboard().setText(value)
+        self._log("Diagnostics copied to clipboard.")
+
+    def _log(self, message: str):
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        line = f"[{timestamp}] {message}"
+        self.diagnostic_lines.append(line)
+        self.diagnostic_lines = self.diagnostic_lines[-400:]
+        if hasattr(self, "diagnostics_output"):
+            self.diagnostics_output.setPlainText("\n".join(self.diagnostic_lines))
+            scrollbar = self.diagnostics_output.verticalScrollBar()
+            scrollbar.setValue(scrollbar.maximum())
 
     def _refresh_status_ui(self):
         if self.manager is None:
@@ -650,13 +723,26 @@ class DisplayShareDesktopApp(QMainWindow):
         if status["is_running"]:
             self.status_badge.setText("Status: Broadcasting")
             self.status_title.setText("Broadcast live on local network")
+        elif status.get("error"):
+            self.status_badge.setText("Status: Capture Error")
+            self.status_title.setText("Broadcast interrupted")
+            error_key = str(status["error"])
+            if getattr(self, "_last_runtime_error", "") != error_key:
+                self._log(f"Capture error: {status['error']}")
+                self._last_runtime_error = error_key
+            self.primary_button.setText("Start Broadcast")
+            self.primary_button.setProperty("accent", False)
+            self.primary_button.style().unpolish(self.primary_button)
+            self.primary_button.style().polish(self.primary_button)
         else:
             self.status_badge.setText("Status: Ready")
             self.status_title.setText("Ready for service")
+            self._last_runtime_error = ""
         self.status_text.setText(build_status_text(status))
-        self.viewer_url_input.setText(str(status["viewer_url"]))
+        viewer_url = str(status["viewer_url"]) if status["is_running"] else "Not live yet"
+        self.viewer_url_input.setText(viewer_url)
         self.viewer_count_label.setText(str(status["viewer_count"]))
-        self.current_link_label.setText(str(status["viewer_url"]))
+        self.current_link_label.setText(viewer_url)
 
     def closeEvent(self, event):  # noqa: N802
         if self.manager is not None:
