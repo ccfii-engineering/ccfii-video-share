@@ -22,6 +22,7 @@ try:
         QMessageBox,
         QPlainTextEdit,
         QPushButton,
+        QScrollArea,
         QSizePolicy,
         QSplitter,
         QVBoxLayout,
@@ -44,6 +45,7 @@ except ModuleNotFoundError:  # pragma: no cover - depends on local Python build
     QPlainTextEdit = None
     QPushButton = None
     QPixmap = None
+    QScrollArea = None
     QSizePolicy = None
     QSplitter = None
     Qt = None
@@ -104,10 +106,10 @@ def build_status_text(status: dict[str, object]) -> str:
 
 def build_preview_caption(target: CaptureTarget | None) -> str:
     if target is None:
-        return "Choose a display or window to preview before switching."
+        return ""
     if target.kind == "desktop":
-        return f"Previewing {target.label}. Refresh the snapshot before switching if the content changed."
-    return f"Previewing {target.title or target.label}. Use this snapshot to confirm the correct window before switching."
+        return target.label
+    return target.title or target.label
 
 
 def build_capability_summary(capabilities) -> str:
@@ -164,7 +166,7 @@ def calculate_logo_size(
     source_height: int,
     window_width: int,
 ) -> tuple[int, int]:
-    max_size = max(72, min(180, int(window_width * 0.16)))
+    max_size = max(48, min(72, int(window_width * 0.06)))
     return calculate_preview_size(source_width, source_height, max_size, max_size)
 
 
@@ -173,6 +175,8 @@ def build_stylesheet() -> str:
         QMainWindow {{
             background: {APP_COLORS['background']};
         }}
+        QScrollArea#appRoot {{ background: transparent; border: none; }}
+        QScrollArea#appRoot QWidget#appRoot {{ background: transparent; }}
         QWidget#appRoot, QWidget#headerTextWrap, QWidget#rightPanel {{
             background: transparent;
             color: {APP_COLORS['foreground']};
@@ -183,7 +187,7 @@ def build_stylesheet() -> str:
             background: transparent;
             color: {APP_COLORS['foreground']};
         }}
-        QFrame#card, QGroupBox {{
+        QFrame#card {{
             background: {APP_COLORS['surface']};
             border: 1px solid {APP_COLORS['border']};
             border-radius: 18px;
@@ -199,14 +203,14 @@ def build_stylesheet() -> str:
             font-size: 12px;
         }}
         QLabel#title {{
-            font-size: 34px;
+            font-size: 22px;
             font-weight: 800;
         }}
         QLabel#subtitle, QLabel#bodyMuted {{
             color: {APP_COLORS['muted']};
         }}
         QLabel#sectionTitle {{
-            font-size: 26px;
+            font-size: 18px;
             font-weight: 800;
         }}
         QLabel#bodyStrong, QLabel#metricValue {{
@@ -215,9 +219,10 @@ def build_stylesheet() -> str:
         QLabel#statusBadge {{
             background: {APP_COLORS['primary']};
             color: {APP_COLORS['foreground']};
-            border-radius: 14px;
-            padding: 10px 18px;
-            min-width: 120px;
+            border-radius: 12px;
+            padding: 6px 14px;
+            font-size: 12px;
+            font-weight: 700;
         }}
         QLabel#previewImage {{
             background: {APP_COLORS['background']};
@@ -244,13 +249,22 @@ def build_stylesheet() -> str:
             padding: 12px 18px;
             font-weight: 700;
         }}
+        QPushButton:hover {{
+            background: {APP_COLORS['primary_hover']};
+        }}
         QPushButton[secondary="true"] {{
             background: {APP_COLORS['surface_alt']};
             border: 1px solid {APP_COLORS['border']};
         }}
+        QPushButton[secondary="true"]:hover {{
+            background: {APP_COLORS['border']};
+        }}
         QPushButton[accent="true"] {{
             background: {APP_COLORS['accent']};
             color: #2d1408;
+        }}
+        QPushButton[accent="true"]:hover {{
+            background: {APP_COLORS['success']};
         }}
         QPushButton[compact="true"] {{
             padding: 8px 12px;
@@ -260,14 +274,67 @@ def build_stylesheet() -> str:
             font-size: 16px;
         }}
         QGroupBox {{
-            margin-top: 16px;
-            padding-top: 18px;
-            font-weight: 700;
+            background: transparent;
+            border: 1px solid {APP_COLORS['border']};
+            border-radius: 14px;
+            margin-top: 10px;
+            padding: 16px 16px 10px 16px;
+            font-weight: 600;
+            font-size: 13px;
+            color: {APP_COLORS['muted']};
         }}
         QGroupBox::title {{
             subcontrol-origin: margin;
-            left: 16px;
+            subcontrol-position: top left;
+            left: 12px;
             padding: 0 6px;
+            color: {APP_COLORS['accent']};
+        }}
+        QGroupBox::indicator {{
+            width: 12px;
+            height: 12px;
+        }}
+        QGroupBox::indicator:unchecked {{
+            border: 2px solid {APP_COLORS['muted']};
+            border-radius: 3px;
+            background: transparent;
+        }}
+        QGroupBox::indicator:checked {{
+            border: 2px solid {APP_COLORS['accent']};
+            border-radius: 3px;
+            background: {APP_COLORS['accent']};
+        }}
+        QFrame#stripDivider {{
+            background: {APP_COLORS['border']};
+            border: none;
+        }}
+        QPushButton#collapseHeader {{
+            background: transparent;
+            border: none;
+            border-bottom: 1px solid {APP_COLORS['border']};
+            border-radius: 0;
+            color: {APP_COLORS['muted']};
+            font-size: 12px;
+            font-weight: 600;
+            padding: 8px 4px;
+            text-align: left;
+        }}
+        QPushButton#collapseHeader:hover {{
+            color: {APP_COLORS['foreground']};
+            background: {APP_COLORS['surface_alt']};
+        }}
+        QWidget#collapseBody {{
+            background: transparent;
+        }}
+        QSplitter::handle {{
+            background: transparent;
+        }}
+        QSplitter::handle:horizontal {{
+            width: 3px;
+        }}
+        QSplitter::handle:vertical {{
+            height: 10px;
+            image: none;
         }}
     """
 
@@ -281,7 +348,7 @@ class DisplayShareDesktopApp(QMainWindow):
         super().__init__()
         self.setWindowTitle(APP_NAME)
         self.resize(1280, 820)
-        self.setMinimumSize(980, 680)
+        self.setMinimumSize(640, 480)
 
         self.targets: list[CaptureTarget] = []
         self.target_lookup: dict[str, CaptureTarget] = {}
@@ -299,31 +366,74 @@ class DisplayShareDesktopApp(QMainWindow):
         self._apply_styles()
 
     def _build_ui(self):
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setObjectName("appRoot")
+        self.setCentralWidget(scroll)
+
         root = QWidget()
         root.setObjectName("appRoot")
-        self.setCentralWidget(root)
         outer = QVBoxLayout(root)
-        outer.setContentsMargins(24, 24, 24, 24)
-        outer.setSpacing(18)
+        outer.setContentsMargins(12, 10, 12, 10)
+        outer.setSpacing(10)
+        scroll.setWidget(root)
 
         outer.addWidget(self._build_header())
 
-        splitter = QSplitter(Qt.Orientation.Horizontal)
-        splitter.setChildrenCollapsible(False)
-        splitter.setOpaqueResize(True)
-        splitter.addWidget(self._build_left_panel())
-        splitter.addWidget(self._build_right_panel())
-        splitter.setStretchFactor(0, 2)
-        splitter.setStretchFactor(1, 3)
-        splitter.setSizes([460, 880])
-        outer.addWidget(splitter, 1)
-        outer.addWidget(self._build_diagnostics_panel())
+        # Top area: left/right panels in a horizontal splitter
+        self.main_splitter = QSplitter(Qt.Orientation.Horizontal)
+        self.main_splitter.setChildrenCollapsible(False)
+        self.main_splitter.setOpaqueResize(True)
+        self.main_splitter.setHandleWidth(14)
+        self.main_splitter.addWidget(self._build_left_panel())
+        self.main_splitter.addWidget(self._build_right_panel())
+        self.main_splitter.setStretchFactor(0, 1)
+        self.main_splitter.setStretchFactor(1, 2)
+        self.main_splitter.setSizes([380, 600])
+
+        # Paint a drag indicator on the horizontal splitter handle
+        h_handle = self.main_splitter.handle(1)
+        h_handle.setCursor(Qt.CursorShape.SizeHorCursor)
+        h_handle_layout = QVBoxLayout(h_handle)
+        h_handle_layout.setContentsMargins(0, 0, 0, 0)
+        h_grip = QLabel("\u2022\n\u2022\n\u2022")
+        h_grip.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        h_grip.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        h_grip.setStyleSheet(f"color: {APP_COLORS['muted']}; font-size: 10px; background: transparent;")
+        h_handle_layout.addWidget(h_grip)
+
+        outer.addWidget(self._build_info_panel())
+
+        # Vertical splitter: main content on top, diagnostics on bottom (draggable)
+        self.vertical_splitter = QSplitter(Qt.Orientation.Vertical)
+        self.vertical_splitter.setChildrenCollapsible(False)
+        self.vertical_splitter.setHandleWidth(14)
+        self.vertical_splitter.addWidget(self.main_splitter)
+        self.vertical_splitter.addWidget(self._build_diagnostics_panel())
+        self.vertical_splitter.setSizes([500, 200])
+        self.vertical_splitter.setStretchFactor(0, 1)
+        self.vertical_splitter.setStretchFactor(1, 0)
+        outer.addWidget(self.vertical_splitter, 1)
+
+        # Paint a drag indicator on the vertical splitter handle
+        handle = self.vertical_splitter.handle(1)
+        handle.setCursor(Qt.CursorShape.SizeVerCursor)
+        handle_layout = QHBoxLayout(handle)
+        handle_layout.setContentsMargins(0, 0, 0, 0)
+        grip_label = QLabel("\u2022 \u2022 \u2022")
+        grip_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        grip_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        grip_label.setStyleSheet(f"color: {APP_COLORS['muted']}; font-size: 10px; background: transparent;")
+        handle_layout.addWidget(grip_label)
+
+        self._last_orientation = Qt.Orientation.Horizontal
 
     def _build_header(self):
         card = self._card_frame()
         layout = QHBoxLayout(card)
-        layout.setContentsMargins(20, 18, 20, 18)
-        layout.setSpacing(18)
+        layout.setContentsMargins(16, 10, 16, 10)
+        layout.setSpacing(12)
 
         self.logo_label = QLabel()
         self.logo_label.setObjectName("logoLabel")
@@ -338,7 +448,7 @@ class DisplayShareDesktopApp(QMainWindow):
         text_wrap.setObjectName("headerTextWrap")
         text_layout = QVBoxLayout(text_wrap)
         text_layout.setContentsMargins(0, 0, 0, 0)
-        text_layout.setSpacing(4)
+        text_layout.setSpacing(1)
 
         eyebrow = QLabel("Christ Charismatic Fellowship Int'l, Inc.")
         eyebrow.setObjectName("eyebrow")
@@ -361,9 +471,10 @@ class DisplayShareDesktopApp(QMainWindow):
 
     def _build_left_panel(self):
         card = self._card_frame()
+        card.setMinimumWidth(200)
         layout = QVBoxLayout(card)
-        layout.setContentsMargins(20, 20, 20, 20)
-        layout.setSpacing(16)
+        layout.setContentsMargins(14, 14, 14, 14)
+        layout.setSpacing(10)
 
         heading = QLabel("Broadcast Control")
         heading.setObjectName("sectionTitle")
@@ -407,12 +518,11 @@ class DisplayShareDesktopApp(QMainWindow):
         link_layout.addLayout(link_row)
         layout.addWidget(link_card)
 
-        self.advanced_group = QGroupBox("AV Controls")
-        self.advanced_group.setCheckable(True)
-        self.advanced_group.setChecked(False)
-        adv_layout = QGridLayout(self.advanced_group)
-        adv_layout.setHorizontalSpacing(12)
-        adv_layout.setVerticalSpacing(10)
+        av_card, av_body, _ = self._collapsible_card("AV Controls")
+
+        av_grid = QGridLayout()
+        av_grid.setHorizontalSpacing(12)
+        av_grid.setVerticalSpacing(10)
 
         self.port_input = QLineEdit("8080")
         self.fps_input = QLineEdit("30")
@@ -424,9 +534,10 @@ class DisplayShareDesktopApp(QMainWindow):
         ]):
             label = QLabel(label_text)
             label.setObjectName("fieldLabel")
-            adv_layout.addWidget(label, row, 0)
-            adv_layout.addWidget(widget, row, 1)
-        layout.addWidget(self.advanced_group)
+            av_grid.addWidget(label, row, 0)
+            av_grid.addWidget(widget, row, 1)
+        av_body.addLayout(av_grid)
+        layout.addWidget(av_card)
         layout.addStretch(1)
         return card
 
@@ -435,110 +546,129 @@ class DisplayShareDesktopApp(QMainWindow):
         container.setObjectName("rightPanel")
         layout = QVBoxLayout(container)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(14)
+        layout.setSpacing(10)
 
+        # --- Source Preview (hero element) ---
         preview_card = self._card_frame()
         preview_layout = QVBoxLayout(preview_card)
-        preview_layout.setContentsMargins(20, 20, 20, 20)
-        preview_layout.setSpacing(12)
+        preview_layout.setContentsMargins(12, 10, 12, 10)
+        preview_layout.setSpacing(4)
 
         preview_header = QHBoxLayout()
+        preview_header.setSpacing(8)
         preview_title = QLabel("Source Preview")
         preview_title.setObjectName("sectionTitle")
         preview_header.addWidget(preview_title)
         preview_header.addStretch(1)
-        preview_header.addWidget(self._button("Refresh Preview", self.refresh_preview, secondary=True, compact=True))
+        preview_header.addWidget(self._button("Refresh", self.refresh_preview, secondary=True, compact=True))
         preview_layout.addLayout(preview_header)
 
+        self.preview_image_label = QLabel("No preview")
+        self.preview_image_label.setObjectName("previewImage")
+        self.preview_image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.preview_image_label.setMinimumHeight(160)
+        self.preview_image_label.setWordWrap(True)
+        self.preview_image_label.setScaledContents(False)
+        self.preview_image_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)
+        preview_layout.addWidget(self.preview_image_label, 1)
+
         self.preview_caption_label = QLabel(build_preview_caption(None))
-        self.preview_caption_label.setObjectName("bodyStrong")
+        self.preview_caption_label.setObjectName("bodyMuted")
         self.preview_caption_label.setWordWrap(True)
         preview_layout.addWidget(self.preview_caption_label)
 
-        self.preview_image_label = QLabel("Preview not loaded yet.")
-        self.preview_image_label.setObjectName("previewImage")
-        self.preview_image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.preview_image_label.setMinimumHeight(360)
-        self.preview_image_label.setWordWrap(True)
-        self.preview_image_label.setScaledContents(False)
-        self.preview_image_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        preview_layout.addWidget(self.preview_image_label, 1)
-
-        self.preview_status_label = QLabel("Preview not loaded yet.")
+        self.preview_status_label = QLabel("")
         self.preview_status_label.setObjectName("bodyMuted")
         self.preview_status_label.setWordWrap(True)
         preview_layout.addWidget(self.preview_status_label)
-        layout.addWidget(preview_card, 2)
+        layout.addWidget(preview_card, 1)
 
-        self.status_card = self._card_frame()
-        status_layout = QVBoxLayout(self.status_card)
-        status_layout.setContentsMargins(20, 20, 20, 20)
-        self.status_title = QLabel("Ready for service")
-        self.status_title.setObjectName("sectionTitle")
-        self.status_text = QLabel("Select the display or window you want to send across the local network.")
+        # --- Compact status strip ---
+        status_strip = self._card_frame()
+        strip_layout = QVBoxLayout(status_strip)
+        strip_layout.setContentsMargins(12, 8, 12, 8)
+        strip_layout.setSpacing(4)
+
+        self.status_title = QLabel("Ready")
+        self.status_title.setObjectName("bodyStrong")
+        strip_layout.addWidget(self.status_title)
+
+        self.status_text = QLabel("Select a source to begin.")
         self.status_text.setObjectName("bodyMuted")
         self.status_text.setWordWrap(True)
-        status_layout.addWidget(self.status_title)
-        status_layout.addWidget(self.status_text)
-        layout.addWidget(self.status_card)
+        strip_layout.addWidget(self.status_text)
 
-        capability_card = self._card_frame()
-        capability_layout = QVBoxLayout(capability_card)
-        capability_layout.setContentsMargins(20, 20, 20, 20)
-        capability_title = QLabel("Backend Capabilities")
-        capability_title.setObjectName("fieldLabel")
-        self.capability_summary_label = QLabel("Capabilities unavailable.")
-        self.capability_summary_label.setObjectName("bodyMuted")
-        self.capability_summary_label.setWordWrap(True)
-        capability_layout.addWidget(capability_title)
-        capability_layout.addWidget(self.capability_summary_label)
-        layout.addWidget(capability_card)
+        metrics_row = QHBoxLayout()
+        metrics_row.setSpacing(12)
+        devices_label = QLabel("Devices:")
+        devices_label.setObjectName("fieldLabel")
+        self.viewer_count_label = QLabel("0")
+        self.viewer_count_label.setObjectName("metricValue")
+        link_label = QLabel("Link:")
+        link_label.setObjectName("fieldLabel")
+        self.current_link_label = QLabel("Not live yet")
+        self.current_link_label.setObjectName("metricValue")
+        metrics_row.addWidget(devices_label)
+        metrics_row.addWidget(self.viewer_count_label)
+        metrics_row.addWidget(link_label)
+        metrics_row.addWidget(self.current_link_label, 1)
+        strip_layout.addLayout(metrics_row)
 
-        details = self._card_frame()
-        details_layout = QVBoxLayout(details)
-        details_layout.setContentsMargins(20, 20, 20, 20)
-        self.viewer_count_label = self._metric(details_layout, "Connected Devices", "0")
-        self.current_link_label = self._metric(details_layout, "Current Link", "Not live yet")
-        layout.addWidget(details)
-
-        notes = self._card_frame()
-        notes_layout = QVBoxLayout(notes)
-        notes_layout.setContentsMargins(20, 20, 20, 20)
-        notes_title = QLabel("Operator Notes")
-        notes_title.setObjectName("fieldLabel")
-        notes_body = QLabel(
-            "Receivers must be on the same local network.\n\n"
-            "Use the receiver link in any browser-capable device, then send that device to the monitor by HDMI or wireless display.\n\n"
-            "If a device loses the feed, keep the app running. The stream will recycle idle connections so receivers can reconnect."
-        )
-        notes_body.setObjectName("bodyMuted")
-        notes_body.setWordWrap(True)
-        notes_layout.addWidget(notes_title)
-        notes_layout.addWidget(notes_body)
-        layout.addWidget(notes, 1)
+        layout.addWidget(status_strip)
 
         return container
 
+    def _build_info_panel(self):
+        card, body_layout, _ = self._collapsible_card("Backend & Operator Info")
+
+        self.capability_summary_label = QLabel("Capabilities unavailable.")
+        self.capability_summary_label.setObjectName("bodyMuted")
+        self.capability_summary_label.setWordWrap(True)
+        body_layout.addWidget(self.capability_summary_label)
+
+        notes_body = QLabel(
+            "Receivers must be on the same local network. "
+            "Stream link works in any browser. "
+            "Receivers auto-reconnect if the feed drops."
+        )
+        notes_body.setObjectName("bodyMuted")
+        notes_body.setWordWrap(True)
+        body_layout.addWidget(notes_body)
+
+        return card
+
     def _build_diagnostics_panel(self):
-        card = self._card_frame()
-        layout = QVBoxLayout(card)
-        layout.setContentsMargins(20, 18, 20, 18)
-        layout.setSpacing(12)
+        card, body_layout, header_btn = self._collapsible_card("Diagnostics", expanded=True)
+        self._diag_body = body_layout.parentWidget()
+        self._diag_expanded_size = 200
+
+        # Override the toggle to also adjust the vertical splitter
+        original_toggle = header_btn.clicked
+        header_btn.clicked.disconnect()
+
+        def toggle_diagnostics():
+            body = self._diag_body
+            show = not body.isVisible()
+            body.setVisible(show)
+            header_btn.setText(f"  \u25bc  Diagnostics" if show else f"  \u25b6  Diagnostics")
+            if show:
+                self.vertical_splitter.setSizes([500, self._diag_expanded_size])
+            else:
+                self._diag_expanded_size = max(100, self.vertical_splitter.sizes()[1])
+                self.vertical_splitter.setSizes([1, 0])
+
+        header_btn.clicked.connect(toggle_diagnostics)
 
         header = QHBoxLayout()
-        title = QLabel("Diagnostics")
-        title.setObjectName("sectionTitle")
-        header.addWidget(title)
         header.addStretch(1)
-        header.addWidget(self._button("Copy Diagnostics", self.copy_diagnostics, secondary=True, compact=True))
-        layout.addLayout(header)
+        header.addWidget(self._button("Copy", self.copy_diagnostics, secondary=True, compact=True))
+        body_layout.addLayout(header)
 
         self.diagnostics_output = QPlainTextEdit()
         self.diagnostics_output.setObjectName("diagnosticsOutput")
         self.diagnostics_output.setReadOnly(True)
-        self.diagnostics_output.setMinimumHeight(160)
         self.diagnostics_output.setPlaceholderText("Runtime logs will appear here.")
-        layout.addWidget(self.diagnostics_output)
+        body_layout.addWidget(self.diagnostics_output, 1)
         return card
 
     def _metric(self, layout: QVBoxLayout, label: str, value: str):
@@ -550,6 +680,35 @@ class DisplayShareDesktopApp(QMainWindow):
         layout.addWidget(title)
         layout.addWidget(body)
         return body
+
+    def _collapsible_card(self, title: str, expanded: bool = False):
+        """Build a card with a clickable header that toggles body visibility."""
+        card = self._card_frame()
+        outer = QVBoxLayout(card)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+
+        arrow = "\u25bc" if expanded else "\u25b6"
+        header_btn = QPushButton(f"  {arrow}  {title}")
+        header_btn.setObjectName("collapseHeader")
+        header_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        outer.addWidget(header_btn)
+
+        body = QWidget()
+        body.setObjectName("collapseBody")
+        body.setVisible(expanded)
+        body_layout = QVBoxLayout(body)
+        body_layout.setContentsMargins(14, 6, 14, 10)
+        body_layout.setSpacing(6)
+        outer.addWidget(body)
+
+        def toggle():
+            show = not body.isVisible()
+            body.setVisible(show)
+            header_btn.setText(f"  \u25bc  {title}" if show else f"  \u25b6  {title}")
+
+        header_btn.clicked.connect(toggle)
+        return card, body_layout, header_btn
 
     def _card_frame(self):
         frame = QFrame()
@@ -563,6 +722,7 @@ class DisplayShareDesktopApp(QMainWindow):
 
     def _button(self, text: str, handler, secondary: bool = False, accent: bool = False, compact: bool = False):
         button = QPushButton(text)
+        button.setCursor(Qt.CursorShape.PointingHandCursor)
         if compact:
             button.setProperty("compact", True)
         if secondary:
@@ -618,12 +778,23 @@ class DisplayShareDesktopApp(QMainWindow):
             self.preview_status_label.setText("Choose a source to see a snapshot preview.")
             return
 
+        is_live = self.manager is not None and self.manager.is_healthy()
+        if is_live:
+            try:
+                self.manager.switch_target(target)
+                self._log(f"Switched live broadcast to {target.label}")
+            except Exception as exc:
+                self._log(f"Source switch failed: {exc}")
+
         try:
             self._log(f"Refreshing preview for {target.label}")
             preview_file = capture_preview_image(target, self.preview_path)
             self.preview_pixmap = QPixmap(str(preview_file))
             self._render_preview()
-            self.preview_status_label.setText("Snapshot ready. Confirm the source, then switch or start the broadcast.")
+            if is_live:
+                self.preview_status_label.setText("Source switched. Broadcast is now streaming this source.")
+            else:
+                self.preview_status_label.setText("Snapshot ready. Confirm the source, then switch or start the broadcast.")
             self._log(f"Preview ready for {target.label}")
         except Exception as exc:
             self.preview_pixmap = None
@@ -638,8 +809,10 @@ class DisplayShareDesktopApp(QMainWindow):
     def _render_preview(self):
         if self.preview_pixmap is None or self.preview_pixmap.isNull():
             return
-        available_width = max(240, self.preview_image_label.width() - 24)
-        available_height = max(180, self.preview_image_label.height() - 24)
+        # Use the label's visible rect minus padding (12px each side)
+        container = self.preview_image_label.contentsRect()
+        available_width = max(200, container.width() - 24)
+        available_height = max(120, container.height() - 24)
         width, height = calculate_preview_size(
             self.preview_pixmap.width(),
             self.preview_pixmap.height(),
@@ -675,6 +848,18 @@ class DisplayShareDesktopApp(QMainWindow):
         super().resizeEvent(event)
         self._render_logo()
         self._render_preview()
+        self._update_responsive_layout()
+
+    def _update_responsive_layout(self):
+        width = self.width()
+        BREAKPOINT = 900
+        if width < BREAKPOINT and self._last_orientation != Qt.Orientation.Vertical:
+            self.main_splitter.setOrientation(Qt.Orientation.Vertical)
+            self._last_orientation = Qt.Orientation.Vertical
+        elif width >= BREAKPOINT and self._last_orientation != Qt.Orientation.Horizontal:
+            self.main_splitter.setOrientation(Qt.Orientation.Horizontal)
+            self.main_splitter.setSizes([380, 600])
+            self._last_orientation = Qt.Orientation.Horizontal
 
     def toggle_broadcast(self):
         if self.manager is not None:

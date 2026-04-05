@@ -69,12 +69,12 @@ $isccCandidates = @(
 )
 
 $iscc = $isccCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
-if (-not (Test-Path $iscc)) {
+if (-not $iscc) {
     Install-InnoSetup
     $iscc = $isccCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
 }
 
-if (-not (Test-Path $iscc)) {
+if (-not $iscc) {
     throw "Inno Setup 6 could not be found after installation."
 }
 

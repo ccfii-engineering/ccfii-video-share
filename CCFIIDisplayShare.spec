@@ -3,7 +3,11 @@
 from PyInstaller.utils.hooks import collect_submodules
 
 
-hiddenimports = collect_submodules("screeninfo")
+hiddenimports = collect_submodules("screeninfo") + [
+    "ccfii_display_share.capture.backends",
+    "ccfii_display_share.capture.backends.windows",
+    "ccfii_display_share.capture.backends.macos",
+]
 
 datas = [
     ("assets/ccfii-logo.png", "assets"),

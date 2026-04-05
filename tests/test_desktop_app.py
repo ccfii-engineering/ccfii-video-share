@@ -67,7 +67,6 @@ class DesktopAppHelpersTest(unittest.TestCase):
 
         caption = build_preview_caption(target)
 
-        self.assertIn("Previewing", caption)
         self.assertIn("Front LED Wall", caption)
 
     def test_calculate_preview_size_preserves_aspect_ratio(self):

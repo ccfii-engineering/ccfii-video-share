@@ -24,10 +24,7 @@ try:
 except ModuleNotFoundError:  # pragma: no cover - depends on local Python build
     mss = None
 
-from .streaming import FrameBuffer, extract_frames
-
-
-__path__ = [str(Path(__file__).resolve().with_name("capture"))]
+from ..streaming import FrameBuffer, extract_frames
 
 
 @dataclass(frozen=True)
@@ -109,7 +106,7 @@ def _list_windows_system():
 
 @lru_cache(maxsize=1)
 def resolve_capture_backend():
-    from .capture.backends import get_backend
+    from .backends import get_backend
 
     return get_backend()
 
@@ -159,7 +156,7 @@ def resolve_ffmpeg_command(
         candidates.append(Path(packaged_path))
 
     executable_dir = Path(sys.executable).resolve().parent
-    module_root = Path(__file__).resolve().parents[1]
+    module_root = Path(__file__).resolve().parents[2]
     candidates.extend([
         executable_dir / "ffmpeg.exe",
         executable_dir / "bundled-bin" / "ffmpeg.exe",
@@ -271,10 +268,25 @@ def capture_desktop_preview_image(target: CaptureTarget, output_path: str | Path
     return output
 
 
+def capture_window_preview_image(target: CaptureTarget, output_path: str | Path) -> Path:
+    """Capture a window preview using PrintWindow for hardware-accelerated apps."""
+    if Image is None:
+        raise RuntimeError("Pillow is not available.")
+    output = Path(output_path)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    frame_bytes = encode_window_frame(target, 3)
+    image = Image.open(BytesIO(frame_bytes))
+    image.save(output)
+    return output
+
+
 def capture_preview_image(target: CaptureTarget, output_path: str | Path) -> Path:
     """Capture a preview snapshot for the selected source."""
     if target.kind == "desktop":
         return capture_desktop_preview_image(target, output_path)
+
+    if sys.platform == "win32" and target.hwnd is not None:
+        return capture_window_preview_image(target, output_path)
 
     output = Path(output_path)
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -334,6 +346,123 @@ def encode_screenshot_frame(target: CaptureTarget, quality: int) -> bytes:
         buffer = BytesIO()
         image.save(buffer, format="JPEG", quality=map_quality_to_jpeg_quality(quality))
         return buffer.getvalue()
+
+
+def encode_window_frame(target: CaptureTarget, quality: int) -> bytes:
+    """Capture a window using PrintWindow for hardware-accelerated apps."""
+    if Image is None:
+        raise RuntimeError("Pillow is not available.")
+    if sys.platform != "win32":
+        raise RuntimeError("Window capture via PrintWindow is only available on Windows.")
+
+    hwnd = target.hwnd
+    if hwnd is None:
+        raise RuntimeError("No window handle available for this target.")
+
+    import ctypes.wintypes as wintypes
+    user32 = ctypes.windll.user32
+    gdi32 = ctypes.windll.gdi32
+
+    rect = wintypes.RECT()
+    user32.GetClientRect(hwnd, ctypes.byref(rect))
+    width = rect.right - rect.left
+    height = rect.bottom - rect.top
+    if width <= 0 or height <= 0:
+        raise RuntimeError("Window has no visible area.")
+
+    hdc_window = user32.GetDC(hwnd)
+    hdc_mem = gdi32.CreateCompatibleDC(hdc_window)
+    hbm = gdi32.CreateCompatibleBitmap(hdc_window, width, height)
+    gdi32.SelectObject(hdc_mem, hbm)
+
+    # PW_RENDERFULLCONTENT (0x2) captures hardware-accelerated content
+    PW_RENDERFULLCONTENT = 0x00000002
+    result = user32.PrintWindow(hwnd, hdc_mem, PW_RENDERFULLCONTENT)
+    if not result:
+        # Fallback to PW_CLIENTONLY
+        user32.PrintWindow(hwnd, hdc_mem, 0x00000001)
+
+    # Extract bitmap data via GetDIBits
+    class BITMAPINFOHEADER(ctypes.Structure):
+        _fields_ = [
+            ("biSize", ctypes.c_uint32),
+            ("biWidth", ctypes.c_int32),
+            ("biHeight", ctypes.c_int32),
+            ("biPlanes", ctypes.c_uint16),
+            ("biBitCount", ctypes.c_uint16),
+            ("biCompression", ctypes.c_uint32),
+            ("biSizeImage", ctypes.c_uint32),
+            ("biXPelsPerMeter", ctypes.c_int32),
+            ("biYPelsPerMeter", ctypes.c_int32),
+            ("biClrUsed", ctypes.c_uint32),
+            ("biClrImportant", ctypes.c_uint32),
+        ]
+
+    bmi = BITMAPINFOHEADER()
+    bmi.biSize = ctypes.sizeof(BITMAPINFOHEADER)
+    bmi.biWidth = width
+    bmi.biHeight = -height  # top-down
+    bmi.biPlanes = 1
+    bmi.biBitCount = 32
+    bmi.biCompression = 0  # BI_RGB
+
+    buf_size = width * height * 4
+    pixel_buf = ctypes.create_string_buffer(buf_size)
+    gdi32.GetDIBits(hdc_mem, hbm, 0, height, pixel_buf, ctypes.byref(bmi), 0)
+
+    gdi32.DeleteObject(hbm)
+    gdi32.DeleteDC(hdc_mem)
+    user32.ReleaseDC(hwnd, hdc_window)
+
+    image = Image.frombuffer("RGBX", (width, height), pixel_buf, "raw", "BGRX", 0, 1)
+    image = image.convert("RGB")
+    buffer = BytesIO()
+    image.save(buffer, format="JPEG", quality=map_quality_to_jpeg_quality(quality))
+    return buffer.getvalue()
+
+
+def window_capture_reader(
+    target: CaptureTarget,
+    fps: int,
+    quality: int,
+    buffer: FrameBuffer,
+    shutdown_event: threading.Event,
+    stop_event: threading.Event,
+):
+    """Capture loop for windows using PrintWindow instead of FFmpeg."""
+    frame_interval = 1.0 / max(1, fps)
+    last_error = ""
+    while not shutdown_event.is_set() and not stop_event.is_set():
+        started_at = time.perf_counter()
+        try:
+            frame = encode_window_frame(target, quality)
+            buffer.update(frame)
+        except Exception as exc:
+            last_error = str(exc).strip()
+            break
+        elapsed = time.perf_counter() - started_at
+        remaining = frame_interval - elapsed
+        if remaining > 0:
+            time.sleep(remaining)
+
+    if not stop_event.is_set() and last_error:
+        setattr(shutdown_event, "ffmpeg_error", last_error)
+        shutdown_event.set()
+
+
+def start_window_reader_thread(target: CaptureTarget,
+                               fps: int,
+                               quality: int,
+                               frame_buffer: FrameBuffer,
+                               shutdown_event: threading.Event,
+                               stop_event: threading.Event) -> threading.Thread:
+    thread = threading.Thread(
+        target=window_capture_reader,
+        args=(target, fps, quality, frame_buffer, shutdown_event, stop_event),
+        daemon=True,
+    )
+    thread.start()
+    return thread
 
 
 def desktop_capture_reader(
@@ -446,6 +575,16 @@ class CaptureController:
         if monitor.kind == "desktop":
             proc = None
             reader_thread = start_desktop_reader_thread(
+                monitor,
+                self.fps,
+                self.quality,
+                self.frame_buffer,
+                self.shutdown_event,
+                stop_event,
+            )
+        elif monitor.kind == "window" and sys.platform == "win32" and monitor.hwnd is not None:
+            proc = None
+            reader_thread = start_window_reader_thread(
                 monitor,
                 self.fps,
                 self.quality,

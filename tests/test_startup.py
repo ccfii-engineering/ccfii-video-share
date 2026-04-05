@@ -264,7 +264,10 @@ class TestStartupBehavior(unittest.TestCase):
         self.assertTrue(mock_grab.call_args.kwargs["all_screens"])
 
     def test_capture_controller_rejects_immediate_ffmpeg_exit(self):
-        target = server.CaptureTarget.window(12345, "Notepad")
+        target = server.CaptureTarget(
+            kind="window", label="Notepad", input_name="title=Notepad",
+            hwnd=None, title="Notepad",
+        )
 
         class ImmediateExitProcess(FakeProcess):
             def poll(self):
@@ -517,8 +520,14 @@ class TestStartupBehavior(unittest.TestCase):
         self.assertTrue(shutdown_event.is_set())
 
     def test_capture_controller_switches_to_selected_monitor(self):
-        first_monitor = server.CaptureTarget.window(1001, "Presenter")
-        selected_monitor = server.CaptureTarget.window(1002, "Lyrics")
+        first_monitor = server.CaptureTarget(
+            kind="window", label="Presenter", input_name="title=Presenter",
+            hwnd=None, title="Presenter",
+        )
+        selected_monitor = server.CaptureTarget(
+            kind="window", label="Lyrics", input_name="title=Lyrics",
+            hwnd=None, title="Lyrics",
+        )
         started_monitors = []
         stop_calls = []
 
