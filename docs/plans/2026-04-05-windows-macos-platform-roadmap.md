@@ -253,7 +253,7 @@ git commit -m "feat: add macos display capture support"
 
 **Files:**
 - Modify: `CCFIIDisplayShare.spec`
-- Modify: `.github/workflows/build-windows.yml`
+- Modify: `.github/workflows/release-desktop-apps.yml`
 - Create: `.github/workflows/build-macos.yml`
 - Modify: `README.md`
 - Test: `tests/test_startup.py`

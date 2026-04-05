@@ -345,7 +345,7 @@ class TestStartupBehavior(unittest.TestCase):
         self.assertIn("CCFIIDisplayShare.exe", setup_script)
 
     def test_github_actions_workflow_builds_cross_platform_release(self):
-        workflow = (ROOT / ".github" / "workflows" / "build-windows.yml").read_text()
+        workflow = (ROOT / ".github" / "workflows" / "release-desktop-apps.yml").read_text()
 
         self.assertIn("name: Release Desktop Apps", workflow)
         self.assertTrue(
