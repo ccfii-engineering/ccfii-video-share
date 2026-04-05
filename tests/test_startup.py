@@ -363,6 +363,7 @@ class TestStartupBehavior(unittest.TestCase):
         self.assertIn("Determine next release tag", workflow)
         self.assertIn("Create draft GitHub release", workflow)
         self.assertIn("CCFIIDisplayShare-macos.zip", workflow)
+        self.assertIn("GH_REPO: ${{ github.repository }}", workflow)
         self.assertNotIn("actions/upload-artifact", workflow)
 
     def test_no_separate_macos_release_workflow_exists(self):
