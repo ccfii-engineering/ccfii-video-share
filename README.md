@@ -26,6 +26,12 @@ To build the packaged app and installer on Windows:
 .\build_installer.ps1
 ```
 
+Or use the batch wrapper:
+
+```bat
+build.bat
+```
+
 That script will:
 - install PyInstaller
 - generate an `.ico` from the CCFII logo if needed

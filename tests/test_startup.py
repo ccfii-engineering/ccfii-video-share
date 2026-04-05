@@ -151,6 +151,20 @@ class TestStartupBehavior(unittest.TestCase):
         self.assertIn("windows-latest", workflow)
         self.assertIn("upload-artifact", workflow)
         self.assertIn("build_installer.ps1", workflow)
+        self.assertIn("installer/Output/CCFIIDisplayShareInstaller.exe", workflow)
+
+    def test_build_batch_script_wraps_powershell_installer_build(self):
+        build_script = (ROOT / "build.bat").read_text()
+
+        self.assertIn("build_installer.ps1", build_script)
+        self.assertIn("powershell", build_script.lower())
+
+    def test_build_script_installs_packaging_dependencies_and_generates_ico(self):
+        build_script = (ROOT / "build_installer.ps1").read_text()
+
+        self.assertIn("pillow", build_script.lower())
+        self.assertIn("JRSoftware.InnoSetup", build_script)
+        self.assertIn("img.save", build_script)
 
     def test_stream_handler_ignores_connection_aborted_on_disconnect(self):
         frame_buffer = server.FrameBuffer()

@@ -25,7 +25,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt
-          python -m pip install pyinstaller pytest
+          python -m pip install pyinstaller pillow pytest
 
       - name: Install Inno Setup
         run: choco install innosetup --no-progress -y
@@ -51,5 +51,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: CCFIIDisplayShare-windows-installer
-          path: Output/CCFIIDisplayShareInstaller.exe
+          path: installer/Output/CCFIIDisplayShareInstaller.exe
           if-no-files-found: error
