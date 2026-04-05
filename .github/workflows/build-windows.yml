@@ -1,4 +1,4 @@
-name: Build Windows App
+name: Build and Release Desktop Apps
 
 on:
   workflow_dispatch:
@@ -12,8 +12,55 @@ permissions:
   contents: write
 
 jobs:
+  prepare-release:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Determine next release tag
+        id: version
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          repo="${{ github.repository }}"
+          latest_tag="$(gh api "repos/$repo/releases/latest" --jq .tag_name 2>/dev/null || true)"
+
+          if [[ "$latest_tag" =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+            major="${BASH_REMATCH[1]}"
+            minor="${BASH_REMATCH[2]}"
+            patch="$(( ${BASH_REMATCH[3]} + 1 ))"
+          else
+            major=0
+            minor=1
+            patch=0
+          fi
+
+          next_tag="v${major}.${minor}.${patch}"
+          echo "tag=$next_tag" >> "$GITHUB_OUTPUT"
+          echo "Next release tag: $next_tag"
+
+      - name: Create draft GitHub release
+        if: github.event_name != 'pull_request'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="${{ steps.version.outputs.tag }}"
+          gh release create "$tag" \
+            --draft \
+            --title "$tag" \
+            --notes "Automated cross-platform release generated from commit ${{ github.sha }}."
+
   build-windows:
     runs-on: blacksmith-4vcpu-windows-2025
+    needs:
+      - prepare-release
 
     steps:
       - name: Check out repository
@@ -48,66 +95,87 @@ jobs:
         shell: pwsh
         run: ./build_installer.ps1
 
-      - name: Upload packaged app folder
-        if: github.event_name == 'pull_request'
-        uses: actions/upload-artifact@v4
-        with:
-          name: CCFIIDisplayShare-windows-app
-          path: dist/CCFIIDisplayShare/**
-          if-no-files-found: error
-
-      - name: Upload Windows installer
-        if: github.event_name == 'pull_request'
-        uses: actions/upload-artifact@v4
-        with:
-          name: CCFIIDisplayShare-windows-installer
-          path: installer/Output/CCFIIDisplayShareInstaller.exe
-          if-no-files-found: error
-
       - name: Package portable app
-        if: github.event_name != 'pull_request'
         shell: pwsh
         run: Compress-Archive -Path dist/CCFIIDisplayShare\* -DestinationPath dist/CCFIIDisplayShare-portable.zip -Force
 
-      - name: Determine next release tag
-        if: github.event_name != 'pull_request'
-        id: version
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          $repo = "${{ github.repository }}"
-          $latestTag = ""
-
-          $latestTag = gh api "repos/$repo/releases/latest" --jq .tag_name 2>$null
-          if ($LASTEXITCODE -ne 0) {
-            $latestTag = ""
-            $LASTEXITCODE = 0
-          }
-
-          if ($latestTag -match '^v(\d+)\.(\d+)\.(\d+)$') {
-            $major = [int]$Matches[1]
-            $minor = [int]$Matches[2]
-            $patch = [int]$Matches[3] + 1
-          } else {
-            $major = 0
-            $minor = 1
-            $patch = 0
-          }
-
-          $nextTag = "v$major.$minor.$patch"
-          "tag=$nextTag" >> $env:GITHUB_OUTPUT
-          Write-Host "Next release tag: $nextTag"
-
-      - name: Create GitHub release
+      - name: Upload Windows assets to draft release
         if: github.event_name != 'pull_request'
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          $tag = "${{ steps.version.outputs.tag }}"
-          gh release create $tag `
+          $tag = "${{ needs.prepare-release.outputs.tag }}"
+          gh release upload $tag `
             "installer/Output/CCFIIDisplayShareInstaller.exe#CCFIIDisplayShareInstaller.exe" `
             "dist/CCFIIDisplayShare-portable.zip#CCFIIDisplayShare-portable.zip" `
-            --title $tag `
-            --notes "Automated Windows release generated from commit ${{ github.sha }}."
+            --clobber
+
+  build-macos:
+    runs-on: macos-latest
+    needs:
+      - prepare-release
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+          python -m pip install pyinstaller pytest
+
+      - name: Run tests
+        run: |
+          python -m pytest tests/test_frame_parser.py -q
+          python -m pytest tests/test_startup.py -q
+          python -m pytest tests/test_desktop_app.py -q
+
+      - name: Build macOS app bundle
+        run: |
+          python -m PyInstaller \
+            --noconfirm \
+            --windowed \
+            --name CCFIIDisplayShare \
+            --add-data "assets/ccfii-logo.png:assets" \
+            --hidden-import ccfii_display_share.capture.backends.macos \
+            --hidden-import ccfii_display_share.capture.backends.windows \
+            desktop_app.py
+
+      - name: Document Screen Recording requirement
+        run: echo "Screen Recording permission may be required for macOS preview capture."
+
+      - name: Package macOS archive
+        run: ditto -c -k --keepParent "dist/CCFIIDisplayShare.app" "dist/CCFIIDisplayShare-macos.zip"
+
+      - name: Upload macOS assets to draft release
+        if: github.event_name != 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="${{ needs.prepare-release.outputs.tag }}"
+          gh release upload "$tag" \
+            "dist/CCFIIDisplayShare-macos.zip#CCFIIDisplayShare-macos.zip" \
+            --clobber
+
+  publish-release:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    needs:
+      - prepare-release
+      - build-windows
+      - build-macos
+
+    steps:
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="${{ needs.prepare-release.outputs.tag }}"
+          gh release edit "$tag" --draft=false

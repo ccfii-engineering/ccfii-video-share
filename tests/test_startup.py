@@ -344,34 +344,30 @@ class TestStartupBehavior(unittest.TestCase):
         self.assertIn("CCFII Display Share", setup_script)
         self.assertIn("CCFIIDisplayShare.exe", setup_script)
 
-    def test_github_actions_workflow_builds_windows_artifacts(self):
+    def test_github_actions_workflow_builds_cross_platform_release(self):
         workflow = (ROOT / ".github" / "workflows" / "build-windows.yml").read_text()
 
         self.assertTrue(
             "windows-latest" in workflow or "blacksmith-4vcpu-windows-2025" in workflow
         )
+        self.assertIn("build-macos", workflow)
+        self.assertIn("prepare-release", workflow)
+        self.assertIn("publish-release", workflow)
         self.assertIn("gh release create", workflow)
+        self.assertIn("gh release upload", workflow)
+        self.assertIn("gh release edit", workflow)
         self.assertIn("contents: write", workflow)
         self.assertIn("build_installer.ps1", workflow)
         self.assertIn("installer/Output/CCFIIDisplayShareInstaller.exe", workflow)
         self.assertIn("Determine next release tag", workflow)
-        self.assertIn("$LASTEXITCODE = 0", workflow)
+        self.assertIn("Create draft GitHub release", workflow)
+        self.assertIn("CCFIIDisplayShare-macos.zip", workflow)
+        self.assertNotIn("actions/upload-artifact", workflow)
 
-    def test_github_actions_workflow_builds_macos_artifacts(self):
+    def test_no_separate_macos_release_workflow_exists(self):
         workflow_path = ROOT / ".github" / "workflows" / "build-macos.yml"
-        self.assertTrue(workflow_path.exists())
 
-        workflow = workflow_path.read_text()
-
-        self.assertIn("macos-latest", workflow)
-        self.assertIn("python -m pytest tests/test_startup.py -q", workflow)
-        self.assertIn("pyinstaller", workflow.lower())
-        self.assertIn("macOS", workflow)
-        self.assertIn("Upload macOS app bundle", workflow)
-        self.assertIn("Upload macOS archive", workflow)
-        self.assertIn("Screen Recording", workflow)
-        self.assertIn("--hidden-import ccfii_display_share.capture.backends.macos", workflow)
-        self.assertIn("--hidden-import ccfii_display_share.capture.backends.windows", workflow)
+        self.assertFalse(workflow_path.exists())
 
     def test_build_batch_script_wraps_powershell_installer_build(self):
         build_script = (ROOT / "build.bat").read_text()
