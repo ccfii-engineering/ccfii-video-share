@@ -149,9 +149,11 @@ class TestStartupBehavior(unittest.TestCase):
         workflow = (ROOT / ".github" / "workflows" / "build-windows.yml").read_text()
 
         self.assertIn("windows-latest", workflow)
-        self.assertIn("upload-artifact", workflow)
+        self.assertIn("gh release create", workflow)
+        self.assertIn("contents: write", workflow)
         self.assertIn("build_installer.ps1", workflow)
         self.assertIn("installer/Output/CCFIIDisplayShareInstaller.exe", workflow)
+        self.assertIn("Determine next release tag", workflow)
 
     def test_build_batch_script_wraps_powershell_installer_build(self):
         build_script = (ROOT / "build.bat").read_text()

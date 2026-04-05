@@ -8,6 +8,9 @@ on:
       - master
   pull_request:
 
+permissions:
+  contents: write
+
 jobs:
   build-windows:
     runs-on: windows-latest
@@ -15,6 +18,8 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -41,6 +46,7 @@ jobs:
         run: ./build_installer.ps1
 
       - name: Upload packaged app folder
+        if: github.event_name == 'pull_request'
         uses: actions/upload-artifact@v4
         with:
           name: CCFIIDisplayShare-windows-app
@@ -48,8 +54,56 @@ jobs:
           if-no-files-found: error
 
       - name: Upload Windows installer
+        if: github.event_name == 'pull_request'
         uses: actions/upload-artifact@v4
         with:
           name: CCFIIDisplayShare-windows-installer
           path: installer/Output/CCFIIDisplayShareInstaller.exe
           if-no-files-found: error
+
+      - name: Package portable app
+        if: github.event_name != 'pull_request'
+        shell: pwsh
+        run: Compress-Archive -Path dist/CCFIIDisplayShare\* -DestinationPath dist/CCFIIDisplayShare-portable.zip -Force
+
+      - name: Determine next release tag
+        if: github.event_name != 'pull_request'
+        id: version
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $repo = "${{ github.repository }}"
+          $latestTag = ""
+          try {
+            $latestTag = gh api "repos/$repo/releases/latest" --jq .tag_name 2>$null
+          } catch {
+            $latestTag = ""
+          }
+
+          if ($latestTag -match '^v(\d+)\.(\d+)\.(\d+)$') {
+            $major = [int]$Matches[1]
+            $minor = [int]$Matches[2]
+            $patch = [int]$Matches[3] + 1
+          } else {
+            $major = 0
+            $minor = 1
+            $patch = 0
+          }
+
+          $nextTag = "v$major.$minor.$patch"
+          "tag=$nextTag" >> $env:GITHUB_OUTPUT
+          Write-Host "Next release tag: $nextTag"
+
+      - name: Create GitHub release
+        if: github.event_name != 'pull_request'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = "${{ steps.version.outputs.tag }}"
+          gh release create $tag `
+            "installer/Output/CCFIIDisplayShareInstaller.exe#CCFIIDisplayShareInstaller.exe" `
+            "dist/CCFIIDisplayShare-portable.zip#CCFIIDisplayShare-portable.zip" `
+            --title $tag `
+            --notes "Automated Windows release generated from commit ${{ github.sha }}."
