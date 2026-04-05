@@ -5,6 +5,7 @@ from __future__ import annotations
 import ctypes
 from io import BytesIO
 from pathlib import Path
+from functools import lru_cache
 import shutil
 import subprocess
 import sys
@@ -24,6 +25,9 @@ except ModuleNotFoundError:  # pragma: no cover - depends on local Python build
     mss = None
 
 from .streaming import FrameBuffer, extract_frames
+
+
+__path__ = [str(Path(__file__).resolve().with_name("capture"))]
 
 
 @dataclass(frozen=True)
@@ -65,7 +69,7 @@ class CaptureTarget:
         )
 
 
-def list_monitors():
+def _list_monitors_system():
     """Return list of monitors with physical pixel coordinates."""
     if sys.platform == "win32":
         ctypes.windll.user32.SetProcessDPIAware()
@@ -73,7 +77,7 @@ def list_monitors():
     return get_monitors()
 
 
-def list_windows():
+def _list_windows_system():
     """Return visible top-level windows that have titles."""
     if sys.platform != "win32":
         return []
@@ -101,6 +105,23 @@ def list_windows():
     user32.EnumWindows(EnumWindowsProc(callback), 0)
     windows.sort(key=lambda item: item.label.lower())
     return windows
+
+
+@lru_cache(maxsize=1)
+def resolve_capture_backend():
+    from .capture.backends import get_backend
+
+    return get_backend()
+
+
+def list_monitors():
+    backend = resolve_capture_backend()
+    return backend.list_displays()
+
+
+def list_windows():
+    backend = resolve_capture_backend()
+    return backend.list_windows()
 
 
 def build_capture_targets(monitors, windows):

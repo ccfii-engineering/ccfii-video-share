@@ -6,7 +6,7 @@ import socket
 import threading
 from http.server import ThreadingHTTPServer
 
-from .capture import CaptureController, CaptureTarget
+from .capture import CaptureController, CaptureTarget, resolve_capture_backend
 from .streaming import FrameBuffer, StreamHandler
 
 
@@ -60,6 +60,7 @@ class BroadcastManager:
             frame_buffer=self.frame_buffer,
             shutdown_event=self.shutdown_event,
         )
+        self.backend = resolve_capture_backend()
         self.server = None
         self._server_thread = None
         self._watcher_thread = None
@@ -72,6 +73,12 @@ class BroadcastManager:
                 return
             self.shutdown_event.clear()
             self.controller.start_capture(target)
+            if self.shutdown_event.wait(timeout=0.05):
+                self.controller.stop_capture()
+                raise RuntimeError(
+                    getattr(self.shutdown_event, "ffmpeg_error", "")
+                    or "Capture backend failed to start."
+                )
             self.handler_class.frame_buffer = self.frame_buffer
             self.server = self.server_factory(("0.0.0.0", self.port),
                                               self.handler_class)
@@ -115,6 +122,7 @@ class BroadcastManager:
         current_target = self.controller.current_monitor
         ffmpeg_error = getattr(self.shutdown_event, "ffmpeg_error", "") or ""
         is_running = self.is_healthy()
+        capabilities = self.backend.get_capabilities() if self.backend is not None else None
         return {
             "is_running": is_running,
             "backend_running": self._is_running,
@@ -124,6 +132,8 @@ class BroadcastManager:
             "fps": self.fps,
             "quality": self.quality,
             "error": ffmpeg_error,
+            "backend_name": getattr(self.backend, "name", ""),
+            "capabilities": capabilities,
         }
 
 

@@ -1,6 +1,9 @@
 """Compatibility wrapper for the packaged desktop UI."""
 
 from ccfii_display_share.desktop import (
+    build_capability_summary,
+    build_diagnostics_copy_text,
+    build_preflight_capability_summary,
     build_stylesheet,
     calculate_logo_size,
     DisplayShareDesktopApp,

@@ -12,10 +12,17 @@ from .capture import (
     list_monitors,
     list_windows,
     read_ffmpeg_stderr,
+    resolve_capture_backend,
     resolve_ffmpeg_command,
     start_ffmpeg,
     start_reader_thread,
     stop_ffmpeg,
+)
+from .contracts import (
+    BackendError,
+    CaptureBackendCapabilities,
+    CaptureBackendContract,
+    CaptureSourceDescriptor,
 )
 from .config import APP_COLORS, APP_NAME, STREAM_IDLE_RETRIES, STREAM_WAIT_TIMEOUT
 from .manager import (
@@ -31,8 +38,12 @@ __all__ = [
     "APP_COLORS",
     "APP_NAME",
     "BroadcastManager",
+    "BackendError",
     "CaptureController",
+    "CaptureBackendCapabilities",
+    "CaptureBackendContract",
     "CaptureTarget",
+    "CaptureSourceDescriptor",
     "FrameBuffer",
     "STREAM_IDLE_RETRIES",
     "STREAM_WAIT_TIMEOUT",
@@ -50,6 +61,7 @@ __all__ = [
     "list_monitors",
     "list_windows",
     "read_ffmpeg_stderr",
+    "resolve_capture_backend",
     "resolve_ffmpeg_command",
     "start_command_listener",
     "start_ffmpeg",

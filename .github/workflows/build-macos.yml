@@ -1,0 +1,68 @@
+name: Build macOS App
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - master
+  pull_request:
+
+permissions:
+  contents: write
+
+jobs:
+  build-macos:
+    runs-on: macos-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+          python -m pip install pyinstaller pytest
+
+      - name: Run tests
+        run: |
+          python -m pytest tests/test_frame_parser.py -q
+          python -m pytest tests/test_startup.py -q
+          python -m pytest tests/test_desktop_app.py -q
+
+      - name: Build macOS app bundle
+        run: |
+          python -m PyInstaller \
+            --noconfirm \
+            --windowed \
+            --name CCFIIDisplayShare \
+            --add-data "assets/ccfii-logo.png:assets" \
+            --hidden-import ccfii_display_share.capture.backends.macos \
+            --hidden-import ccfii_display_share.capture.backends.windows \
+            desktop_app.py
+
+      - name: Document Screen Recording requirement
+        run: echo "Screen Recording permission may be required for macOS preview capture."
+
+      - name: Package macOS archive
+        run: ditto -c -k --keepParent "dist/CCFIIDisplayShare.app" "dist/CCFIIDisplayShare-macos.zip"
+
+      - name: Upload macOS app bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: CCFIIDisplayShare-macos-app
+          path: dist/CCFIIDisplayShare.app
+          if-no-files-found: error
+
+      - name: Upload macOS archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: CCFIIDisplayShare-macos-archive
+          path: dist/CCFIIDisplayShare-macos.zip
+          if-no-files-found: error

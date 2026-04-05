@@ -5,6 +5,7 @@ from io import BytesIO
 from pathlib import Path
 import tempfile
 import time
+import sys
 import threading
 import unittest
 from unittest.mock import patch
@@ -45,6 +46,127 @@ class TestStartupBehavior(unittest.TestCase):
         self.assertTrue(hasattr(package, "BroadcastManager"))
         self.assertTrue(hasattr(package, "CaptureTarget"))
         self.assertTrue(hasattr(package, "FrameBuffer"))
+
+    def test_capture_contract_module_exposes_backend_interface(self):
+        contracts = importlib.import_module("ccfii_display_share.contracts")
+
+        self.assertTrue(hasattr(contracts, "CaptureBackendContract"))
+        self.assertTrue(hasattr(contracts, "CaptureBackendCapabilities"))
+        self.assertTrue(hasattr(contracts, "BackendError"))
+
+    def test_capture_module_resolves_windows_backend_adapter(self):
+        capture_module = importlib.import_module("ccfii_display_share.capture")
+
+        backend = capture_module.resolve_capture_backend()
+
+        expected_backend = "macos" if sys.platform == "darwin" else "windows"
+        self.assertEqual(backend.name, expected_backend)
+        self.assertTrue(hasattr(backend, "list_displays"))
+        self.assertTrue(hasattr(backend, "list_windows"))
+
+    def test_capture_backend_registry_resolves_macos_backend(self):
+        registry = importlib.import_module("ccfii_display_share.capture.backends")
+
+        backend = registry.get_backend("darwin")
+
+        self.assertEqual(backend.name, "macos")
+        self.assertTrue(hasattr(backend, "get_capabilities"))
+
+    def test_macos_backend_reports_screen_recording_permission_requirement(self):
+        macos_backend = importlib.import_module("ccfii_display_share.capture.backends.macos")
+
+        backend = macos_backend.MacOSCaptureBackend()
+        capabilities = backend.get_capabilities()
+
+        self.assertFalse(capabilities.display_capture)
+        self.assertTrue(capabilities.preview_capture)
+        self.assertFalse(capabilities.start_capture)
+        self.assertTrue(capabilities.stop_capture)
+        self.assertFalse(capabilities.window_capture)
+        self.assertIn("Screen Recording", capabilities.permissions_required)
+        self.assertGreaterEqual(len(capabilities.notes), 1)
+
+    def test_macos_backend_rejects_live_capture_until_streaming_is_implemented(self):
+        macos_backend = importlib.import_module("ccfii_display_share.capture.backends.macos")
+
+        backend = macos_backend.MacOSCaptureBackend()
+
+        with self.assertRaises(RuntimeError) as error:
+            backend.start_capture(object(), fps=30, quality=5)
+
+        self.assertIn("not implemented", str(error.exception).lower())
+
+    def test_macos_backend_lists_display_sources(self):
+        macos_backend = importlib.import_module("ccfii_display_share.capture.backends.macos")
+
+        class FakeMonitor:
+            x = 0
+            y = 0
+            width = 1440
+            height = 900
+            name = "MacBook Pro"
+
+        with patch("ccfii_display_share.capture.backends.macos.list_monitors", return_value=[FakeMonitor()]):
+            backend = macos_backend.MacOSCaptureBackend()
+            displays = backend.list_displays()
+
+        self.assertEqual(len(displays), 1)
+        self.assertIn("MacBook Pro", displays[0].label)
+
+    def test_macos_backend_normalizes_permission_denied_preview_error(self):
+        macos_backend = importlib.import_module("ccfii_display_share.capture.backends.macos")
+
+        class FakeMonitor:
+            x = 0
+            y = 0
+            width = 1440
+            height = 900
+            name = "MacBook Pro"
+
+        with patch("ccfii_display_share.capture.backends.macos.list_monitors", return_value=[FakeMonitor()]):
+            backend = macos_backend.MacOSCaptureBackend()
+            source = backend.list_displays()[0]
+
+        with patch(
+            "ccfii_display_share.capture.backends.macos.ImageGrab.grab",
+            side_effect=OSError("not authorized to capture screen"),
+        ):
+            with self.assertRaises(RuntimeError):
+                backend.capture_preview(source, "/tmp/preview.png")
+
+        error = backend.get_error()
+
+        self.assertIsNotNone(error)
+        self.assertEqual(error.code, "macos_screen_recording_permission_denied")
+        self.assertIn("Screen Recording", error.message)
+
+    def test_capture_discovery_routes_through_backend_adapter(self):
+        capture_module = importlib.import_module("ccfii_display_share.capture")
+        display_sentinel = object()
+        window_sentinel = object()
+        calls = []
+
+        class FakeBackend:
+            name = "fake"
+
+            def list_displays(self):
+                calls.append("displays")
+                return [display_sentinel]
+
+            def list_windows(self):
+                calls.append("windows")
+                return [window_sentinel]
+
+        with patch(
+            "ccfii_display_share.capture.resolve_capture_backend",
+            return_value=FakeBackend(),
+        ):
+            displays = capture_module.list_monitors()
+            windows = capture_module.list_windows()
+
+        self.assertEqual(displays, [display_sentinel])
+        self.assertEqual(windows, [window_sentinel])
+        self.assertEqual(calls, ["displays", "windows"])
 
     def test_frame_buffer_reports_viewer_count(self):
         frame_buffer = server.FrameBuffer()
@@ -235,6 +357,22 @@ class TestStartupBehavior(unittest.TestCase):
         self.assertIn("Determine next release tag", workflow)
         self.assertIn("$LASTEXITCODE = 0", workflow)
 
+    def test_github_actions_workflow_builds_macos_artifacts(self):
+        workflow_path = ROOT / ".github" / "workflows" / "build-macos.yml"
+        self.assertTrue(workflow_path.exists())
+
+        workflow = workflow_path.read_text()
+
+        self.assertIn("macos-latest", workflow)
+        self.assertIn("python -m pytest tests/test_startup.py -q", workflow)
+        self.assertIn("pyinstaller", workflow.lower())
+        self.assertIn("macOS", workflow)
+        self.assertIn("Upload macOS app bundle", workflow)
+        self.assertIn("Upload macOS archive", workflow)
+        self.assertIn("Screen Recording", workflow)
+        self.assertIn("--hidden-import ccfii_display_share.capture.backends.macos", workflow)
+        self.assertIn("--hidden-import ccfii_display_share.capture.backends.windows", workflow)
+
     def test_build_batch_script_wraps_powershell_installer_build(self):
         build_script = (ROOT / "build.bat").read_text()
 
@@ -248,6 +386,23 @@ class TestStartupBehavior(unittest.TestCase):
         self.assertIn("JRSoftware.InnoSetup", build_script)
         self.assertIn("img.save", build_script)
         self.assertIn("ffmpeg", build_script.lower())
+
+    def test_readme_documents_windows_and_macos_packaging_requirements(self):
+        readme = (ROOT / "README.md").read_text()
+
+        self.assertIn("Windows Packaging", readme)
+        self.assertIn("macOS Packaging", readme)
+        self.assertIn("Screen Recording", readme)
+        self.assertIn("macOS", readme)
+
+    def test_readme_documents_manual_verification_matrix(self):
+        readme = (ROOT / "README.md").read_text()
+        roadmap = (ROOT / "docs" / "plans" / "2026-04-05-windows-macos-platform-roadmap.md").read_text()
+
+        self.assertIn("Manual Verification Matrix", readme)
+        self.assertIn("Windows display capture", readme)
+        self.assertIn("macOS Screen Recording permission onboarding", readme)
+        self.assertIn("manual verification matrix", roadmap.lower())
 
     def test_ffmpeg_binary_resolution_checks_packaged_location_first(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -446,6 +601,96 @@ class TestStartupBehavior(unittest.TestCase):
         manager.stop()
 
         self.assertEqual(capture_stops, [selected_target])
+
+    def test_broadcast_manager_exposes_backend_capabilities(self):
+        selected_target = server.CaptureTarget.desktop(FakeMonitor())
+
+        class FakeController:
+            def __init__(self, **kwargs):
+                self.current_monitor = None
+
+            def start_capture(self, target):
+                self.current_monitor = target
+
+            def stop_capture(self):
+                pass
+
+        class FakeBackend:
+            def get_capabilities(self):
+                return server.CaptureBackendCapabilities(
+                    display_capture=True,
+                    window_capture=False,
+                    preview_capture=True,
+                    start_capture=True,
+                    stop_capture=True,
+                    permissions_required=("Screen Recording",),
+                    notes=("Native preview enabled",),
+                )
+
+        manager = server.BroadcastManager(
+            targets=[selected_target],
+            port=9090,
+            fps=25,
+            quality=6,
+            lan_ip_fn=lambda: "192.168.1.77",
+            controller_factory=lambda **kwargs: FakeController(**kwargs),
+            server_factory=lambda address, handler_cls: None,
+            shutdown_watcher_fn=lambda shutdown_event, http_server: None,
+        )
+        manager.backend = FakeBackend()
+
+        capabilities = manager.get_status()["capabilities"]
+
+        self.assertTrue(capabilities.display_capture)
+        self.assertFalse(capabilities.window_capture)
+        self.assertIn("Screen Recording", capabilities.permissions_required)
+
+    def test_broadcast_manager_aborts_start_when_capture_backend_fails(self):
+        selected_target = server.CaptureTarget.desktop(FakeMonitor())
+        capture_starts = []
+        server_starts = []
+
+        class FakeController:
+            def __init__(self, **kwargs):
+                self.kwargs = kwargs
+                self.current_monitor = None
+
+            def start_capture(self, target):
+                capture_starts.append(target)
+                self.current_monitor = target
+                setattr(self.kwargs["shutdown_event"], "ffmpeg_error", "capture backend failed")
+                self.kwargs["shutdown_event"].set()
+
+            def stop_capture(self):
+                pass
+
+        class FakeServer:
+            def __init__(self, address, handler_cls):
+                server_starts.append((address, handler_cls))
+
+            def serve_forever(self):
+                raise AssertionError("server should not start when capture fails")
+
+            def shutdown(self):
+                pass
+
+        manager = server.BroadcastManager(
+            targets=[selected_target],
+            port=9090,
+            fps=25,
+            quality=6,
+            lan_ip_fn=lambda: "192.168.1.77",
+            controller_factory=lambda **kwargs: FakeController(**kwargs),
+            server_factory=lambda address, handler_cls: FakeServer(address, handler_cls),
+            shutdown_watcher_fn=lambda shutdown_event, http_server: None,
+        )
+
+        with self.assertRaises(RuntimeError) as error:
+            manager.start(selected_target)
+
+        self.assertIn("capture backend failed", str(error.exception))
+        self.assertEqual(capture_starts, [selected_target])
+        self.assertEqual(server_starts, [])
 
     def test_broadcast_manager_switch_target_restarts_capture(self):
         first_target = server.CaptureTarget.desktop(FakeMonitor())

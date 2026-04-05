@@ -57,6 +57,7 @@ from .capture import (
     capture_preview_image,
     list_monitors,
     list_windows,
+    resolve_capture_backend,
 )
 from .config import APP_COLORS, APP_NAME
 from .manager import BroadcastManager
@@ -107,6 +108,41 @@ def build_preview_caption(target: CaptureTarget | None) -> str:
     if target.kind == "desktop":
         return f"Previewing {target.label}. Refresh the snapshot before switching if the content changed."
     return f"Previewing {target.title or target.label}. Use this snapshot to confirm the correct window before switching."
+
+
+def build_capability_summary(capabilities) -> str:
+    if capabilities is None:
+        return "Capabilities unavailable."
+
+    lines = []
+    lines.append("Display capture: enabled" if capabilities.display_capture else "Display capture unavailable")
+    lines.append("Window capture: enabled" if capabilities.window_capture else "Window capture unavailable")
+    lines.append("Preview capture: enabled" if capabilities.preview_capture else "Preview capture unavailable")
+    if capabilities.permissions_required:
+        lines.append("Permissions required: " + ", ".join(capabilities.permissions_required))
+    if capabilities.notes:
+        lines.extend(capabilities.notes)
+    return "\n".join(lines)
+
+
+def build_diagnostics_copy_text(status: dict[str, object]) -> str:
+    backend_name = str(status.get("backend_name") or "unknown")
+    capabilities = status.get("capabilities")
+    error = str(status.get("error") or "none")
+    lines = [
+        f"Backend: {backend_name}",
+        f"Error: {error}",
+    ]
+    if capabilities is not None:
+        lines.append(build_capability_summary(capabilities))
+    return "\n".join(lines)
+
+
+def build_preflight_capability_summary(backend_name: str, capabilities) -> str:
+    preface = f"Backend: {backend_name}" if backend_name else "Backend: unknown"
+    if capabilities is None:
+        return f"{preface}\nCapabilities unavailable."
+    return f"{preface}\n{build_capability_summary(capabilities)}"
 
 
 def calculate_preview_size(
@@ -255,6 +291,7 @@ class DisplayShareDesktopApp(QMainWindow):
         self.logo_pixmap: QPixmap | None = None
         self.diagnostic_lines: list[str] = []
         self._last_runtime_error = ""
+        self.backend = resolve_capture_backend()
 
         self._build_ui()
         self.refresh_targets(initial=True)
@@ -444,6 +481,18 @@ class DisplayShareDesktopApp(QMainWindow):
         status_layout.addWidget(self.status_title)
         status_layout.addWidget(self.status_text)
         layout.addWidget(self.status_card)
+
+        capability_card = self._card_frame()
+        capability_layout = QVBoxLayout(capability_card)
+        capability_layout.setContentsMargins(20, 20, 20, 20)
+        capability_title = QLabel("Backend Capabilities")
+        capability_title.setObjectName("fieldLabel")
+        self.capability_summary_label = QLabel("Capabilities unavailable.")
+        self.capability_summary_label.setObjectName("bodyMuted")
+        self.capability_summary_label.setWordWrap(True)
+        capability_layout.addWidget(capability_title)
+        capability_layout.addWidget(self.capability_summary_label)
+        layout.addWidget(capability_card)
 
         details = self._card_frame()
         details_layout = QVBoxLayout(details)
@@ -660,6 +709,17 @@ class DisplayShareDesktopApp(QMainWindow):
         except Exception as exc:
             self.manager = None
             self._log(f"Broadcast start failed: {exc}")
+            self._last_runtime_error = str(exc)
+            self.status_badge.setText("Status: Capture Error")
+            self.status_title.setText("Broadcast interrupted")
+            self.status_text.setText(
+                build_status_text({
+                    "is_running": False,
+                    "error": str(exc),
+                })
+            )
+            self.viewer_url_input.setText("Not live yet")
+            self.current_link_label.setText("Not live yet")
             QMessageBox.critical(self, APP_NAME, f"Unable to start the broadcast.\n\n{exc}")
             return
 
@@ -702,6 +762,15 @@ class DisplayShareDesktopApp(QMainWindow):
         if QGuiApplication is None:
             return
         value = self.diagnostics_output.toPlainText()
+        if self.manager is not None:
+            prefix = build_diagnostics_copy_text(self.manager.get_status())
+            value = f"{prefix}\n\n{value}" if value else prefix
+        else:
+            prefix = build_preflight_capability_summary(
+                getattr(self.backend, "name", "unknown"),
+                self.backend.get_capabilities() if self.backend is not None else None,
+            )
+            value = f"{prefix}\n\n{value}" if value else prefix
         QGuiApplication.clipboard().setText(value)
         self._log("Diagnostics copied to clipboard.")
 
@@ -718,8 +787,17 @@ class DisplayShareDesktopApp(QMainWindow):
     def _refresh_status_ui(self):
         if self.manager is None:
             self.status_text.setText(build_status_text({"is_running": False}))
+            self.capability_summary_label.setText(
+                build_preflight_capability_summary(
+                    getattr(self.backend, "name", "unknown"),
+                    self.backend.get_capabilities() if self.backend is not None else None,
+                )
+            )
             return
         status = self.manager.get_status()
+        self.capability_summary_label.setText(
+            build_capability_summary(status.get("capabilities"))
+        )
         if status["is_running"]:
             self.status_badge.setText("Status: Broadcasting")
             self.status_title.setText("Broadcast live on local network")
