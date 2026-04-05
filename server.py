@@ -12,6 +12,8 @@ from ccfii_display_share import (
     StreamHandler,
     VIEWER_HTML,
     build_capture_targets,
+    build_preview_command,
+    capture_preview_image,
     choose_capture_target,
     choose_monitor,
     extract_frames,

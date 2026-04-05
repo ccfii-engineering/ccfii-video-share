@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ctypes
+from pathlib import Path
 import subprocess
 import sys
 import threading
@@ -138,6 +139,43 @@ def start_ffmpeg(target: CaptureTarget, fps: int, quality: int) -> subprocess.Po
         stderr=subprocess.PIPE,
         bufsize=0,
     )
+
+
+def build_preview_command(target: CaptureTarget, output_path: str | Path) -> list[str]:
+    """Build a one-frame FFmpeg command for source preview snapshots."""
+    cmd = [
+        "ffmpeg",
+        "-y",
+        "-f", "gdigrab",
+        "-framerate", "5",
+    ]
+    if target.kind == "desktop":
+        cmd.extend([
+            "-offset_x", str(target.x),
+            "-offset_y", str(target.y),
+            "-video_size", f"{target.width}x{target.height}",
+        ])
+    cmd.extend([
+        "-i", target.input_name,
+        "-frames:v", "1",
+        "-update", "1",
+        str(output_path),
+    ])
+    return cmd
+
+
+def capture_preview_image(target: CaptureTarget, output_path: str | Path) -> Path:
+    """Capture a preview snapshot for the selected source."""
+    output = Path(output_path)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run(
+        build_preview_command(target, output),
+        check=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    return output
 
 
 def stop_ffmpeg(proc: subprocess.Popen | None):

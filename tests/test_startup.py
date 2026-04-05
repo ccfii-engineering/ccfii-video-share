@@ -98,6 +98,25 @@ class TestStartupBehavior(unittest.TestCase):
         self.assertNotIn("-offset_y", cmd)
         self.assertNotIn("-video_size", cmd)
 
+    def test_build_preview_command_uses_desktop_capture_geometry(self):
+        target = server.CaptureTarget.desktop(FakeMonitor())
+
+        cmd = server.build_preview_command(target, "/tmp/preview.png")
+
+        self.assertIn("-offset_x", cmd)
+        self.assertIn("-offset_y", cmd)
+        self.assertIn("-video_size", cmd)
+        self.assertIn("/tmp/preview.png", cmd)
+
+    def test_build_preview_command_uses_window_title_for_window_preview(self):
+        target = server.CaptureTarget.window(12345, "Presenter View")
+
+        cmd = server.build_preview_command(target, "preview.png")
+
+        self.assertIn("title=Presenter View", cmd)
+        self.assertIn("preview.png", cmd)
+        self.assertNotIn("-offset_x", cmd)
+
     def test_shutdown_watcher_handles_event_with_server_instance(self):
         shutdown_event = threading.Event()
 

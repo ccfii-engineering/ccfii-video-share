@@ -2,6 +2,8 @@
 
 from ccfii_display_share.desktop import (
     DisplayShareDesktopApp,
+    calculate_preview_size,
+    build_preview_caption,
     build_status_text,
     format_target_option,
     launch_app,

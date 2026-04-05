@@ -5,7 +5,13 @@ import unittest
 
 import server
 
-from desktop_app import build_status_text, format_target_option, parse_int_setting
+from desktop_app import (
+    build_preview_caption,
+    calculate_preview_size,
+    build_status_text,
+    format_target_option,
+    parse_int_setting,
+)
 
 
 class FakeMonitor:
@@ -49,6 +55,25 @@ class DesktopAppHelpersTest(unittest.TestCase):
     def test_parse_int_setting_rejects_out_of_range_values(self):
         with self.assertRaises(ValueError):
             parse_int_setting("100", 30, 1, 60)
+
+    def test_build_preview_caption_for_desktop_source(self):
+        target = server.CaptureTarget.desktop(FakeMonitor())
+
+        caption = build_preview_caption(target)
+
+        self.assertIn("Previewing", caption)
+        self.assertIn("Front LED Wall", caption)
+
+    def test_calculate_preview_size_preserves_aspect_ratio(self):
+        width, height = calculate_preview_size(1920, 1080, 480, 320)
+
+        self.assertEqual((width, height), (480, 270))
+
+    def test_calculate_preview_size_returns_safe_minimum_when_box_is_tiny(self):
+        width, height = calculate_preview_size(1920, 1080, 40, 40)
+
+        self.assertGreaterEqual(width, 1)
+        self.assertGreaterEqual(height, 1)
 
 
 if __name__ == "__main__":
