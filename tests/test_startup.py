@@ -154,6 +154,7 @@ class TestStartupBehavior(unittest.TestCase):
         self.assertIn("build_installer.ps1", workflow)
         self.assertIn("installer/Output/CCFIIDisplayShareInstaller.exe", workflow)
         self.assertIn("Determine next release tag", workflow)
+        self.assertIn("$LASTEXITCODE = 0", workflow)
 
     def test_build_batch_script_wraps_powershell_installer_build(self):
         build_script = (ROOT / "build.bat").read_text()

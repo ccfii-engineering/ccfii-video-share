@@ -75,10 +75,11 @@ jobs:
         run: |
           $repo = "${{ github.repository }}"
           $latestTag = ""
-          try {
-            $latestTag = gh api "repos/$repo/releases/latest" --jq .tag_name 2>$null
-          } catch {
+
+          $latestTag = gh api "repos/$repo/releases/latest" --jq .tag_name 2>$null
+          if ($LASTEXITCODE -ne 0) {
             $latestTag = ""
+            $LASTEXITCODE = 0
           }
 
           if ($latestTag -match '^v(\d+)\.(\d+)\.(\d+)$') {
