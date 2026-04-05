@@ -8,6 +8,7 @@ import server
 from desktop_app import (
     build_preview_caption,
     calculate_preview_size,
+    calculate_logo_size,
     build_status_text,
     format_target_option,
     parse_int_setting,
@@ -74,6 +75,13 @@ class DesktopAppHelpersTest(unittest.TestCase):
 
         self.assertGreaterEqual(width, 1)
         self.assertGreaterEqual(height, 1)
+
+    def test_calculate_logo_size_caps_logo_inside_header(self):
+        width, height = calculate_logo_size(658, 658, 1180)
+
+        self.assertLessEqual(width, 180)
+        self.assertLessEqual(height, 180)
+        self.assertEqual(width, height)
 
 
 if __name__ == "__main__":

@@ -3,7 +3,7 @@
 from PyInstaller.utils.hooks import collect_submodules
 
 
-hiddenimports = collect_submodules("screeninfo")
+hiddenimports = collect_submodules("screeninfo") + collect_submodules("PySide6")
 
 datas = [
     ("assets/ccfii-logo.png", "assets"),

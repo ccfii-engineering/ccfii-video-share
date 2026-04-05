@@ -141,6 +141,11 @@ class TestStartupBehavior(unittest.TestCase):
         self.assertIn("from ccfii_display_share import", server_wrapper)
         self.assertIn("cli_main", server_wrapper)
 
+    def test_requirements_include_pyside6_for_desktop_ui(self):
+        requirements = (ROOT / "requirements.txt").read_text().lower()
+
+        self.assertIn("pyside6", requirements)
+
     def test_run_script_launches_desktop_entrypoint(self):
         run_script = (ROOT / "run.bat").read_text()
 
@@ -157,6 +162,7 @@ class TestStartupBehavior(unittest.TestCase):
 
         self.assertIn("desktop_app.py", spec_file)
         self.assertIn("assets/ccfii-logo.png", spec_file)
+        self.assertIn("PySide6", spec_file)
 
     def test_inno_setup_script_uses_ccfii_branding(self):
         setup_script = (ROOT / "installer" / "CCFIIDisplayShare.iss").read_text()

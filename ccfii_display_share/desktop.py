@@ -1,24 +1,52 @@
-"""Desktop control panel for CCFII Display Share."""
+"""PySide6 desktop control panel for CCFII Display Share."""
 
 from __future__ import annotations
 
 from pathlib import Path
 import tempfile
-from typing import TYPE_CHECKING
 
 try:
-    import tkinter as tk
-    from tkinter import messagebox, ttk
+    from PySide6.QtCore import Qt, QTimer
+    from PySide6.QtGui import QFont, QGuiApplication, QImage, QPixmap
+    from PySide6.QtWidgets import (
+        QApplication,
+        QComboBox,
+        QFrame,
+        QGridLayout,
+        QGroupBox,
+        QHBoxLayout,
+        QLabel,
+        QLineEdit,
+        QMainWindow,
+        QMessageBox,
+        QPushButton,
+        QSizePolicy,
+        QSplitter,
+        QVBoxLayout,
+        QWidget,
+    )
 except ModuleNotFoundError:  # pragma: no cover - depends on local Python build
-    tk = None
-    messagebox = None
-    ttk = None
-
-try:
-    from PIL import Image, ImageTk
-except ModuleNotFoundError:  # pragma: no cover - depends on local Python build
-    Image = None
-    ImageTk = None
+    QApplication = None
+    QComboBox = None
+    QFont = None
+    QFrame = None
+    QGridLayout = None
+    QGroupBox = None
+    QHBoxLayout = None
+    QGuiApplication = None
+    QImage = None
+    QLabel = None
+    QLineEdit = None
+    QMainWindow = object
+    QMessageBox = None
+    QPushButton = None
+    QPixmap = None
+    QSizePolicy = None
+    QSplitter = None
+    Qt = None
+    QTimer = None
+    QVBoxLayout = None
+    QWidget = None
 
 from .capture import (
     CaptureTarget,
@@ -29,9 +57,6 @@ from .capture import (
 )
 from .config import APP_COLORS, APP_NAME
 from .manager import BroadcastManager
-
-if TYPE_CHECKING:
-    import tkinter as _tk
 
 
 def format_target_option(target: CaptureTarget) -> str:
@@ -67,7 +92,6 @@ def build_status_text(status: dict[str, object]) -> str:
 
 
 def build_preview_caption(target: CaptureTarget | None) -> str:
-    """Build operator-facing preview copy for the selected source."""
     if target is None:
         return "Choose a display or window to preview before switching."
     if target.kind == "desktop":
@@ -81,393 +105,463 @@ def calculate_preview_size(
     max_width: int,
     max_height: int,
 ) -> tuple[int, int]:
-    """Scale preview dimensions to fit the available box while preserving aspect ratio."""
     safe_width = max(1, max_width)
     safe_height = max(1, max_height)
     if source_width <= 0 or source_height <= 0:
         return safe_width, safe_height
-
     scale = min(safe_width / source_width, safe_height / source_height)
     return max(1, int(source_width * scale)), max(1, int(source_height * scale))
 
 
-class DisplayShareDesktopApp:
-    """Tkinter-based operator console for display sharing."""
+def calculate_logo_size(
+    source_width: int,
+    source_height: int,
+    window_width: int,
+) -> tuple[int, int]:
+    max_size = max(72, min(180, int(window_width * 0.16)))
+    return calculate_preview_size(source_width, source_height, max_size, max_size)
 
-    def __init__(self, root: "_tk.Tk"):
-        if tk is None or ttk is None or messagebox is None:
-            raise RuntimeError("Tkinter is not available in this Python environment.")
-        self.root = root
-        self.root.title(APP_NAME)
-        self.root.geometry("1180x760")
-        self.root.minsize(1040, 680)
-        self.root.configure(bg=APP_COLORS["background"])
-        self.root.protocol("WM_DELETE_WINDOW", self.on_close)
+
+class DisplayShareDesktopApp(QMainWindow):
+    """Responsive Qt desktop operator console."""
+
+    def __init__(self):
+        if QApplication is None:
+            raise RuntimeError("PySide6 is not available in this Python environment.")
+        super().__init__()
+        self.setWindowTitle(APP_NAME)
+        self.resize(1280, 820)
+        self.setMinimumSize(980, 680)
 
         self.targets: list[CaptureTarget] = []
         self.target_lookup: dict[str, CaptureTarget] = {}
         self.manager: BroadcastManager | None = None
-        self.advanced_visible = False
-        self.logo_image: tk.PhotoImage | None = None
-        self.preview_image: tk.PhotoImage | None = None
-        self._preview_source_image = None
         self.preview_path = Path(tempfile.gettempdir()) / "ccfii-display-share-preview.png"
+        self.preview_pixmap: QPixmap | None = None
+        self.logo_pixmap: QPixmap | None = None
 
-        self.selected_target = tk.StringVar()
-        self.status_badge = tk.StringVar(value="Ready")
-        self.status_title = tk.StringVar(value="Ready for service")
-        self.status_text = tk.StringVar(
-            value="Select the display or window you want to send across the local network."
-        )
-        self.viewer_url = tk.StringVar(value="Not live yet")
-        self.viewer_count = tk.StringVar(value="0")
-        self.fps_value = tk.StringVar(value="30")
-        self.quality_value = tk.StringVar(value="5")
-        self.port_value = tk.StringVar(value="8080")
-        self.preview_caption = tk.StringVar(value=build_preview_caption(None))
-        self.preview_status = tk.StringVar(value="Preview not loaded yet.")
-
-        self._configure_styles()
         self._build_ui()
-        self.root.bind("<Configure>", self._handle_resize)
         self.refresh_targets(initial=True)
-        self._schedule_status_poll()
-
-    def _configure_styles(self):
-        style = ttk.Style()
-        try:
-            style.theme_use("clam")
-        except tk.TclError:
-            pass
-        style.configure(
-            "CCFII.TCombobox",
-            fieldbackground=APP_COLORS["surface_alt"],
-            background=APP_COLORS["surface_alt"],
-            foreground=APP_COLORS["foreground"],
-            bordercolor=APP_COLORS["border"],
-            arrowcolor=APP_COLORS["accent"],
-            lightcolor=APP_COLORS["surface_alt"],
-            darkcolor=APP_COLORS["surface_alt"],
-        )
+        self._start_status_timer()
+        self._apply_styles()
 
     def _build_ui(self):
-        outer = tk.Frame(self.root, bg=APP_COLORS["background"], padx=24, pady=24)
-        outer.pack(fill="both", expand=True)
-        outer.grid_rowconfigure(1, weight=1)
-        outer.grid_columnconfigure(0, weight=1)
+        root = QWidget()
+        self.setCentralWidget(root)
+        outer = QVBoxLayout(root)
+        outer.setContentsMargins(24, 24, 24, 24)
+        outer.setSpacing(18)
 
-        header = tk.Frame(outer, bg=APP_COLORS["surface"], bd=1,
-                          highlightbackground=APP_COLORS["border"],
-                          highlightthickness=1)
-        header.grid(row=0, column=0, sticky="ew", pady=(0, 18))
+        outer.addWidget(self._build_header())
 
-        self._build_header(header)
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+        splitter.setChildrenCollapsible(False)
+        splitter.addWidget(self._build_left_panel())
+        splitter.addWidget(self._build_right_panel())
+        splitter.setStretchFactor(0, 3)
+        splitter.setStretchFactor(1, 2)
+        outer.addWidget(splitter, 1)
 
-        body = tk.Frame(outer, bg=APP_COLORS["background"])
-        body.grid(row=1, column=0, sticky="nsew")
-        body.grid_rowconfigure(0, weight=1)
-        body.grid_columnconfigure(0, weight=3)
-        body.grid_columnconfigure(1, weight=2)
+    def _build_header(self):
+        card = self._card_frame()
+        layout = QHBoxLayout(card)
+        layout.setContentsMargins(20, 18, 20, 18)
+        layout.setSpacing(18)
 
-        left = tk.Frame(body, bg=APP_COLORS["background"])
-        left.grid(row=0, column=0, sticky="nsew", padx=(0, 12))
-
-        right = tk.Frame(body, bg=APP_COLORS["background"])
-        right.grid(row=0, column=1, sticky="nsew")
-        right.grid_rowconfigure(2, weight=1)
-
-        self._build_primary_panel(left)
-        self._build_status_panels(right)
-
-    def _build_header(self, parent: tk.Frame):
-        left = tk.Frame(parent, bg=APP_COLORS["surface"], padx=20, pady=18)
-        left.pack(side="left", fill="x", expand=True)
-
+        self.logo_label = QLabel()
+        self.logo_label.setObjectName("logoLabel")
+        self.logo_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         logo_path = Path(__file__).resolve().parents[1] / "assets" / "ccfii-logo.png"
         if logo_path.exists():
-            try:
-                self.logo_image = tk.PhotoImage(file=str(logo_path))
-                logo_label = tk.Label(left, image=self.logo_image, bg=APP_COLORS["surface"])
-                logo_label.pack(side="left", padx=(0, 18))
-            except tk.TclError:
-                self.logo_image = None
+            self.logo_pixmap = QPixmap(str(logo_path))
+            self._render_logo()
+        layout.addWidget(self.logo_label, 0, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
 
-        text_wrap = tk.Frame(left, bg=APP_COLORS["surface"])
-        text_wrap.pack(side="left", fill="x", expand=True)
+        text_wrap = QWidget()
+        text_layout = QVBoxLayout(text_wrap)
+        text_layout.setContentsMargins(0, 0, 0, 0)
+        text_layout.setSpacing(4)
 
-        tk.Label(
-            text_wrap,
-            text="Christ Charismatic Fellowship Int'l, Inc.",
-            bg=APP_COLORS["surface"],
-            fg=APP_COLORS["accent"],
-            font=("Palatino Linotype", 12, "bold"),
-        ).pack(anchor="w")
-        tk.Label(
-            text_wrap,
-            text=APP_NAME,
-            bg=APP_COLORS["surface"],
-            fg=APP_COLORS["foreground"],
-            font=("Palatino Linotype", 28, "bold"),
-        ).pack(anchor="w", pady=(6, 0))
-        tk.Label(
-            text_wrap,
-            text="Local network display broadcast for sanctuary and event operations",
-            bg=APP_COLORS["surface"],
-            fg=APP_COLORS["muted"],
-            font=("Cambria", 12),
-        ).pack(anchor="w", pady=(4, 0))
+        eyebrow = QLabel("Christ Charismatic Fellowship Int'l, Inc.")
+        eyebrow.setObjectName("eyebrow")
+        title = QLabel(APP_NAME)
+        title.setObjectName("title")
+        subtitle = QLabel("Local network display broadcast for sanctuary and event operations")
+        subtitle.setObjectName("subtitle")
 
-        tk.Label(
-            parent,
-            textvariable=self.status_badge,
-            bg=APP_COLORS["primary"],
-            fg=APP_COLORS["foreground"],
-            font=("Cambria", 12, "bold"),
-            padx=18,
-            pady=10,
-        ).pack(side="right", padx=20, pady=20)
+        text_layout.addWidget(eyebrow)
+        text_layout.addWidget(title)
+        text_layout.addWidget(subtitle)
 
-    def _build_primary_panel(self, parent: tk.Frame):
-        panel = self._card(parent)
-        panel.pack(fill="both", expand=True)
+        layout.addWidget(text_wrap, 1)
 
-        tk.Label(panel, text="Broadcast Control", bg=APP_COLORS["surface"],
-                 fg=APP_COLORS["foreground"], font=("Palatino Linotype", 24, "bold")).pack(anchor="w")
-        tk.Label(panel, text="Choose what to share, then start the local broadcast.",
-                 bg=APP_COLORS["surface"], fg=APP_COLORS["muted"],
-                 font=("Cambria", 12)).pack(anchor="w", pady=(6, 22))
-        tk.Label(panel, text="Source", bg=APP_COLORS["surface"],
-                 fg=APP_COLORS["accent"], font=("Cambria", 12, "bold")).pack(anchor="w")
+        self.status_badge = QLabel("Status: Ready")
+        self.status_badge.setObjectName("statusBadge")
+        self.status_badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(self.status_badge, 0, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        return card
 
-        source_row = tk.Frame(panel, bg=APP_COLORS["surface"])
-        source_row.pack(fill="x", pady=(8, 18))
+    def _build_left_panel(self):
+        card = self._card_frame()
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(20, 20, 20, 20)
+        layout.setSpacing(16)
 
-        self.source_combo = ttk.Combobox(
-            source_row,
-            textvariable=self.selected_target,
-            state="readonly",
-            style="CCFII.TCombobox",
-            font=("Cambria", 12),
-        )
-        self.source_combo.pack(side="left", fill="x", expand=True, ipady=8)
-        self.source_combo.bind("<<ComboboxSelected>>", lambda _event: self.refresh_preview())
+        heading = QLabel("Broadcast Control")
+        heading.setObjectName("sectionTitle")
+        intro = QLabel("Choose what to share, then start the local broadcast.")
+        intro.setWordWrap(True)
+        intro.setObjectName("bodyMuted")
+        layout.addWidget(heading)
+        layout.addWidget(intro)
 
-        self._button(
-            source_row,
-            text="Refresh Sources",
-            command=self.refresh_targets,
-            bg=APP_COLORS["surface_alt"],
-            fg=APP_COLORS["foreground"],
-            active_bg=APP_COLORS["primary_hover"],
-        ).pack(side="left", padx=(12, 0))
+        source_label = QLabel("Source")
+        source_label.setObjectName("fieldLabel")
+        layout.addWidget(source_label)
 
-        self.primary_button = self._button(
-            panel,
-            text="Start Broadcast",
-            command=self.toggle_broadcast,
-            bg=APP_COLORS["primary"],
-            fg=APP_COLORS["foreground"],
-            active_bg=APP_COLORS["primary_hover"],
-            font=("Palatino Linotype", 18, "bold"),
-            padx=20,
-            pady=18,
-        )
-        self.primary_button.pack(fill="x")
+        source_row = QHBoxLayout()
+        self.source_combo = QComboBox()
+        self.source_combo.currentIndexChanged.connect(self.refresh_preview)
+        self.source_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        source_row.addWidget(self.source_combo, 1)
 
-        self.preview_card = self._sub_card(panel)
-        self.preview_card.pack(fill="x", pady=(18, 18))
-        preview_header = tk.Frame(self.preview_card, bg=APP_COLORS["surface_alt"])
-        preview_header.pack(fill="x")
-        tk.Label(preview_header, text="Source Preview", bg=APP_COLORS["surface_alt"],
-                 fg=APP_COLORS["accent"], font=("Cambria", 12, "bold")).pack(side="left")
-        self._button(
-            preview_header,
-            text="Refresh Preview",
-            command=self.refresh_preview,
-            bg=APP_COLORS["background"],
-            fg=APP_COLORS["foreground"],
-            active_bg=APP_COLORS["primary_hover"],
-            font=("Cambria", 10, "bold"),
-            padx=12,
-            pady=8,
-        ).pack(side="right")
+        refresh_sources_button = self._button("Refresh Sources", self.refresh_targets, secondary=True)
+        source_row.addWidget(refresh_sources_button)
+        layout.addLayout(source_row)
 
-        self.preview_image_label = tk.Label(
-            self.preview_card,
-            bg=APP_COLORS["background"],
-            fg=APP_COLORS["muted"],
-            text="Preview not loaded yet.",
-            height=12,
-            justify="center",
-            wraplength=500,
-        )
-        self.preview_image_label.pack(fill="x", pady=(12, 10), ipady=18)
-        tk.Label(self.preview_card, textvariable=self.preview_caption,
-                 bg=APP_COLORS["surface_alt"], fg=APP_COLORS["foreground"],
-                 font=("Cambria", 11, "bold"), wraplength=520, justify="left").pack(anchor="w")
-        tk.Label(self.preview_card, textvariable=self.preview_status,
-                 bg=APP_COLORS["surface_alt"], fg=APP_COLORS["muted"],
-                 font=("Cambria", 10), wraplength=520, justify="left").pack(anchor="w", pady=(8, 0))
+        self.primary_button = self._button("Start Broadcast", self.toggle_broadcast)
+        self.primary_button.setObjectName("primaryButton")
+        layout.addWidget(self.primary_button)
 
-        self.url_card = self._sub_card(panel)
-        self.url_card.pack(fill="x", pady=(22, 18))
-        tk.Label(self.url_card, text="Receiver Link", bg=APP_COLORS["surface_alt"],
-                 fg=APP_COLORS["accent"], font=("Cambria", 12, "bold")).pack(anchor="w")
+        preview_card = self._sub_card()
+        preview_layout = QVBoxLayout(preview_card)
+        preview_layout.setContentsMargins(16, 16, 16, 16)
+        preview_layout.setSpacing(10)
 
-        link_row = tk.Frame(self.url_card, bg=APP_COLORS["surface_alt"])
-        link_row.pack(fill="x", pady=(10, 0))
+        preview_header = QHBoxLayout()
+        preview_title = QLabel("Source Preview")
+        preview_title.setObjectName("fieldLabel")
+        preview_header.addWidget(preview_title)
+        preview_header.addStretch(1)
+        preview_header.addWidget(self._button("Refresh Preview", self.refresh_preview, secondary=True, compact=True))
+        preview_layout.addLayout(preview_header)
 
-        self.link_entry = tk.Entry(
-            link_row,
-            textvariable=self.viewer_url,
-            state="readonly",
-            relief="flat",
-            readonlybackground=APP_COLORS["background"],
-            fg=APP_COLORS["foreground"],
-            disabledforeground=APP_COLORS["foreground"],
-            font=("Cambria", 12),
-            bd=0,
-        )
-        self.link_entry.pack(side="left", fill="x", expand=True, ipady=10)
+        self.preview_image_label = QLabel("Preview not loaded yet.")
+        self.preview_image_label.setObjectName("previewImage")
+        self.preview_image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.preview_image_label.setMinimumHeight(220)
+        self.preview_image_label.setWordWrap(True)
+        self.preview_image_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        preview_layout.addWidget(self.preview_image_label, 1)
 
-        self._button(
-            link_row,
-            text="Copy Link",
-            command=self.copy_viewer_link,
-            bg=APP_COLORS["accent"],
-            fg="#2d1408",
-            active_bg="#f0b85d",
-        ).pack(side="left", padx=(12, 0))
+        self.preview_caption_label = QLabel(build_preview_caption(None))
+        self.preview_caption_label.setObjectName("bodyStrong")
+        self.preview_caption_label.setWordWrap(True)
+        self.preview_status_label = QLabel("Preview not loaded yet.")
+        self.preview_status_label.setObjectName("bodyMuted")
+        self.preview_status_label.setWordWrap(True)
+        preview_layout.addWidget(self.preview_caption_label)
+        preview_layout.addWidget(self.preview_status_label)
+        layout.addWidget(preview_card, 1)
 
-        self._button(
-            panel,
-            text="AV Controls",
-            command=self.toggle_advanced,
-            bg=APP_COLORS["surface_alt"],
-            fg=APP_COLORS["foreground"],
-            active_bg=APP_COLORS["primary_hover"],
-        ).pack(anchor="w")
+        link_card = self._sub_card()
+        link_layout = QVBoxLayout(link_card)
+        link_layout.setContentsMargins(16, 16, 16, 16)
+        link_layout.setSpacing(10)
+        link_title = QLabel("Receiver Link")
+        link_title.setObjectName("fieldLabel")
+        link_layout.addWidget(link_title)
 
-        self.advanced_panel = self._sub_card(panel)
-        self._build_advanced_panel(self.advanced_panel)
+        link_row = QHBoxLayout()
+        self.viewer_url_input = QLineEdit("Not live yet")
+        self.viewer_url_input.setReadOnly(True)
+        link_row.addWidget(self.viewer_url_input, 1)
+        link_row.addWidget(self._button("Copy Link", self.copy_viewer_link, accent=True, compact=True))
+        link_layout.addLayout(link_row)
+        layout.addWidget(link_card)
 
-    def _build_advanced_panel(self, parent: tk.Frame):
-        settings = [
-            ("Port", self.port_value, "HTTP port used by the receivers."),
-            ("Frames Per Second", self.fps_value, "Higher is smoother, but uses more bandwidth."),
-            ("JPEG Quality", self.quality_value, "Lower number means better image quality."),
-        ]
-        for label, variable, description in settings:
-            tk.Label(parent, text=label, bg=APP_COLORS["surface_alt"],
-                     fg=APP_COLORS["foreground"], font=("Cambria", 12, "bold")).pack(anchor="w", pady=(0, 4))
-            tk.Entry(
-                parent,
-                textvariable=variable,
-                relief="flat",
-                bg=APP_COLORS["background"],
-                fg=APP_COLORS["foreground"],
-                insertbackground=APP_COLORS["foreground"],
-                font=("Cambria", 12),
-            ).pack(fill="x", ipady=8)
-            tk.Label(parent, text=description, bg=APP_COLORS["surface_alt"],
-                     fg=APP_COLORS["muted"], font=("Cambria", 10)).pack(anchor="w", pady=(6, 16))
+        self.advanced_group = QGroupBox("AV Controls")
+        self.advanced_group.setCheckable(True)
+        self.advanced_group.setChecked(False)
+        adv_layout = QGridLayout(self.advanced_group)
+        adv_layout.setHorizontalSpacing(12)
+        adv_layout.setVerticalSpacing(10)
 
-    def _build_status_panels(self, parent: tk.Frame):
-        self.status_card = self._card(parent)
-        self.status_card.pack(fill="x", pady=(0, 14))
-        tk.Label(self.status_card, textvariable=self.status_title, bg=APP_COLORS["surface"],
-                 fg=APP_COLORS["foreground"], font=("Palatino Linotype", 20, "bold"),
-                 wraplength=280, justify="left").pack(anchor="w")
-        tk.Label(self.status_card, textvariable=self.status_text, bg=APP_COLORS["surface"],
-                 fg=APP_COLORS["muted"], font=("Cambria", 12), wraplength=280,
-                 justify="left").pack(anchor="w", pady=(10, 0))
+        self.port_input = QLineEdit("8080")
+        self.fps_input = QLineEdit("30")
+        self.quality_input = QLineEdit("5")
+        for row, (label_text, widget) in enumerate([
+            ("Port", self.port_input),
+            ("Frames Per Second", self.fps_input),
+            ("JPEG Quality", self.quality_input),
+        ]):
+            label = QLabel(label_text)
+            label.setObjectName("fieldLabel")
+            adv_layout.addWidget(label, row, 0)
+            adv_layout.addWidget(widget, row, 1)
+        layout.addWidget(self.advanced_group)
+        return card
 
-        details = self._card(parent)
-        details.pack(fill="x", pady=(0, 14))
-        self._metric(details, "Connected Devices", self.viewer_count)
-        self._metric(details, "Current Link", self.viewer_url)
+    def _build_right_panel(self):
+        container = QWidget()
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(14)
 
-        help_card = self._card(parent)
-        help_card.pack(fill="both", expand=True)
-        tk.Label(help_card, text="Operator Notes", bg=APP_COLORS["surface"],
-                 fg=APP_COLORS["accent"], font=("Cambria", 12, "bold")).pack(anchor="w")
-        tips = (
+        self.status_card = self._card_frame()
+        status_layout = QVBoxLayout(self.status_card)
+        status_layout.setContentsMargins(20, 20, 20, 20)
+        self.status_title = QLabel("Ready for service")
+        self.status_title.setObjectName("sectionTitle")
+        self.status_text = QLabel("Select the display or window you want to send across the local network.")
+        self.status_text.setObjectName("bodyMuted")
+        self.status_text.setWordWrap(True)
+        status_layout.addWidget(self.status_title)
+        status_layout.addWidget(self.status_text)
+        layout.addWidget(self.status_card)
+
+        details = self._card_frame()
+        details_layout = QVBoxLayout(details)
+        details_layout.setContentsMargins(20, 20, 20, 20)
+        self.viewer_count_label = self._metric(details_layout, "Connected Devices", "0")
+        self.current_link_label = self._metric(details_layout, "Current Link", "Not live yet")
+        layout.addWidget(details)
+
+        notes = self._card_frame()
+        notes_layout = QVBoxLayout(notes)
+        notes_layout.setContentsMargins(20, 20, 20, 20)
+        notes_title = QLabel("Operator Notes")
+        notes_title.setObjectName("fieldLabel")
+        notes_body = QLabel(
             "Receivers must be on the same local network.\n\n"
             "Use the receiver link in any browser-capable device, then send that device to the monitor by HDMI or wireless display.\n\n"
             "If a device loses the feed, keep the app running. The stream will recycle idle connections so receivers can reconnect."
         )
-        tk.Label(help_card, text=tips, bg=APP_COLORS["surface"], fg=APP_COLORS["muted"],
-                 font=("Cambria", 11), wraplength=280, justify="left").pack(anchor="w", pady=(10, 0))
+        notes_body.setObjectName("bodyMuted")
+        notes_body.setWordWrap(True)
+        notes_layout.addWidget(notes_title)
+        notes_layout.addWidget(notes_body)
+        layout.addWidget(notes, 1)
 
-    def _metric(self, parent: tk.Frame, label: str, variable: tk.StringVar):
-        tk.Label(parent, text=label, bg=APP_COLORS["surface"],
-                 fg=APP_COLORS["accent"], font=("Cambria", 11, "bold")).pack(anchor="w", pady=(0, 6))
-        tk.Label(parent, textvariable=variable, bg=APP_COLORS["surface"],
-                 fg=APP_COLORS["foreground"], font=("Cambria", 13), wraplength=280,
-                 justify="left").pack(anchor="w", pady=(0, 14))
+        return container
 
-    def _card(self, parent):
-        return tk.Frame(parent, bg=APP_COLORS["surface"], padx=20, pady=20,
-                        highlightbackground=APP_COLORS["border"], highlightthickness=1)
+    def _metric(self, layout: QVBoxLayout, label: str, value: str):
+        title = QLabel(label)
+        title.setObjectName("fieldLabel")
+        body = QLabel(value)
+        body.setObjectName("metricValue")
+        body.setWordWrap(True)
+        layout.addWidget(title)
+        layout.addWidget(body)
+        return body
 
-    def _sub_card(self, parent):
-        return tk.Frame(parent, bg=APP_COLORS["surface_alt"], padx=16, pady=16,
-                        highlightbackground=APP_COLORS["border"], highlightthickness=1)
+    def _card_frame(self):
+        frame = QFrame()
+        frame.setObjectName("card")
+        return frame
 
-    def _button(self, parent, text: str, command,
-                bg: str, fg: str, active_bg: str,
-                font=("Cambria", 11, "bold"), padx=16, pady=12):
-        return tk.Button(
-            parent,
-            text=text,
-            command=command,
-            bg=bg,
-            fg=fg,
-            activebackground=active_bg,
-            activeforeground=fg,
-            relief="flat",
-            bd=0,
-            cursor="hand2",
-            font=font,
-            padx=padx,
-            pady=pady,
+    def _sub_card(self):
+        frame = QFrame()
+        frame.setObjectName("subCard")
+        return frame
+
+    def _button(self, text: str, handler, secondary: bool = False, accent: bool = False, compact: bool = False):
+        button = QPushButton(text)
+        if compact:
+            button.setProperty("compact", True)
+        if secondary:
+            button.setProperty("secondary", True)
+        if accent:
+            button.setProperty("accent", True)
+        button.clicked.connect(handler)
+        return button
+
+    def _apply_styles(self):
+        self.setStyleSheet(
+            f"""
+            QWidget {{
+                background: {APP_COLORS['background']};
+                color: {APP_COLORS['foreground']};
+                font-family: 'Segoe UI';
+                font-size: 14px;
+            }}
+            QFrame#card, QGroupBox {{
+                background: {APP_COLORS['surface']};
+                border: 1px solid {APP_COLORS['border']};
+                border-radius: 18px;
+            }}
+            QFrame#subCard {{
+                background: {APP_COLORS['surface_alt']};
+                border: 1px solid {APP_COLORS['border']};
+                border-radius: 16px;
+            }}
+            QLabel#eyebrow, QLabel#fieldLabel {{
+                color: {APP_COLORS['accent']};
+                font-weight: 700;
+                font-size: 12px;
+            }}
+            QLabel#title {{
+                font-size: 34px;
+                font-weight: 800;
+            }}
+            QLabel#subtitle, QLabel#bodyMuted {{
+                color: {APP_COLORS['muted']};
+            }}
+            QLabel#sectionTitle {{
+                font-size: 26px;
+                font-weight: 800;
+            }}
+            QLabel#bodyStrong, QLabel#metricValue {{
+                font-weight: 600;
+            }}
+            QLabel#statusBadge {{
+                background: {APP_COLORS['primary']};
+                color: {APP_COLORS['foreground']};
+                border-radius: 14px;
+                padding: 10px 18px;
+                min-width: 120px;
+            }}
+            QLabel#previewImage {{
+                background: {APP_COLORS['background']};
+                border-radius: 14px;
+                border: 1px solid {APP_COLORS['border']};
+                padding: 12px;
+            }}
+            QLineEdit, QComboBox {{
+                background: {APP_COLORS['background']};
+                border: 1px solid {APP_COLORS['border']};
+                border-radius: 12px;
+                padding: 10px 12px;
+                min-height: 22px;
+            }}
+            QPushButton {{
+                background: {APP_COLORS['primary']};
+                color: {APP_COLORS['foreground']};
+                border: none;
+                border-radius: 12px;
+                padding: 12px 18px;
+                font-weight: 700;
+            }}
+            QPushButton[secondary="true"] {{
+                background: {APP_COLORS['surface_alt']};
+                border: 1px solid {APP_COLORS['border']};
+            }}
+            QPushButton[accent="true"] {{
+                background: {APP_COLORS['accent']};
+                color: #2d1408;
+            }}
+            QPushButton[compact="true"] {{
+                padding: 8px 12px;
+            }}
+            QPushButton#primaryButton {{
+                padding: 16px 20px;
+                font-size: 16px;
+            }}
+            QGroupBox {{
+                margin-top: 16px;
+                padding-top: 18px;
+                font-weight: 700;
+            }}
+            QGroupBox::title {{
+                subcontrol-origin: margin;
+                left: 16px;
+                padding: 0 6px;
+            }}
+            """
         )
+
+    def _start_status_timer(self):
+        self.status_timer = QTimer(self)
+        self.status_timer.timeout.connect(self._refresh_status_ui)
+        self.status_timer.start(1500)
 
     def refresh_targets(self, initial: bool = False):
         try:
             monitors = list_monitors()
             windows = list_windows()
         except Exception as exc:
-            if not initial:
-                messagebox.showerror(APP_NAME, f"Unable to refresh sources.\n\n{exc}")
+            if not initial and QMessageBox is not None:
+                QMessageBox.critical(self, APP_NAME, f"Unable to refresh sources.\n\n{exc}")
             return
 
         self.targets = build_capture_targets(monitors, windows)
         labels = [format_target_option(target) for target in self.targets]
         self.target_lookup = dict(zip(labels, self.targets))
-        self.source_combo["values"] = labels
-        if labels and (initial or self.selected_target.get() not in self.target_lookup):
-            self.selected_target.set(labels[0])
+
+        current = self.source_combo.currentText()
+        self.source_combo.blockSignals(True)
+        self.source_combo.clear()
+        self.source_combo.addItems(labels)
+        if labels:
+            index = max(0, labels.index(current)) if current in labels else 0
+            self.source_combo.setCurrentIndex(index)
+        self.source_combo.blockSignals(False)
         self.refresh_preview()
 
+    def _selected_target(self) -> CaptureTarget | None:
+        return self.target_lookup.get(self.source_combo.currentText())
+
     def refresh_preview(self):
-        target = self.target_lookup.get(self.selected_target.get())
-        self.preview_caption.set(build_preview_caption(target))
+        target = self._selected_target()
+        self.preview_caption_label.setText(build_preview_caption(target))
         if target is None:
-            self.preview_status.set("Choose a source to see a snapshot preview.")
-            self.preview_image = None
-            self.preview_image_label.configure(image="", text="Preview not loaded yet.")
+            self.preview_pixmap = None
+            self.preview_image_label.setText("Preview not loaded yet.")
+            self.preview_image_label.setPixmap(QPixmap())
+            self.preview_status_label.setText("Choose a source to see a snapshot preview.")
             return
 
         try:
             preview_file = capture_preview_image(target, self.preview_path)
-            self._load_preview_image(preview_file)
-            self.preview_status.set("Snapshot ready. Confirm the source, then switch or start the broadcast.")
+            self.preview_pixmap = QPixmap(str(preview_file))
+            self._render_preview()
+            self.preview_status_label.setText("Snapshot ready. Confirm the source, then switch or start the broadcast.")
         except Exception as exc:
-            self.preview_image = None
-            self._preview_source_image = None
-            self.preview_image_label.configure(image="", text="Preview unavailable")
-            self.preview_status.set(f"Unable to capture preview right now: {exc}")
+            self.preview_pixmap = None
+            self.preview_image_label.setPixmap(QPixmap())
+            self.preview_image_label.setText("Preview unavailable")
+            self.preview_status_label.setText(f"Unable to capture preview right now: {exc}")
+
+    def _render_preview(self):
+        if self.preview_pixmap is None or self.preview_pixmap.isNull():
+            return
+        available_width = max(240, self.preview_image_label.width() - 24)
+        available_height = max(180, self.preview_image_label.height() - 24)
+        width, height = calculate_preview_size(
+            self.preview_pixmap.width(),
+            self.preview_pixmap.height(),
+            available_width,
+            available_height,
+        )
+        pixmap = self.preview_pixmap.scaled(
+            width,
+            height,
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+        self.preview_image_label.setPixmap(pixmap)
+        self.preview_image_label.setText("")
+
+    def _render_logo(self):
+        if self.logo_pixmap is None or self.logo_pixmap.isNull():
+            return
+        width, height = calculate_logo_size(
+            self.logo_pixmap.width(),
+            self.logo_pixmap.height(),
+            max(1, self.width()),
+        )
+        pixmap = self.logo_pixmap.scaled(
+            width,
+            height,
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+        self.logo_label.setPixmap(pixmap)
+
+    def resizeEvent(self, event):  # noqa: N802
+        super().resizeEvent(event)
+        self._render_logo()
+        self._render_preview()
 
     def toggle_broadcast(self):
         if self.manager and self.manager.get_status()["is_running"]:
@@ -476,16 +570,16 @@ class DisplayShareDesktopApp:
             self.start_broadcast()
 
     def start_broadcast(self):
-        target = self.target_lookup.get(self.selected_target.get())
+        target = self._selected_target()
         if target is None:
-            messagebox.showwarning(APP_NAME, "Choose a display or window before starting the broadcast.")
+            QMessageBox.warning(self, APP_NAME, "Choose a display or window before starting the broadcast.")
             return
         try:
-            port = parse_int_setting(self.port_value.get(), 8080, 1024, 65535)
-            fps = parse_int_setting(self.fps_value.get(), 30, 1, 60)
-            quality = parse_int_setting(self.quality_value.get(), 5, 1, 31)
+            port = parse_int_setting(self.port_input.text(), 8080, 1024, 65535)
+            fps = parse_int_setting(self.fps_input.text(), 30, 1, 60)
+            quality = parse_int_setting(self.quality_input.text(), 5, 1, 31)
         except ValueError as exc:
-            messagebox.showerror(APP_NAME, str(exc))
+            QMessageBox.critical(self, APP_NAME, str(exc))
             return
 
         try:
@@ -498,12 +592,15 @@ class DisplayShareDesktopApp:
             self.manager.start(target)
         except Exception as exc:
             self.manager = None
-            messagebox.showerror(APP_NAME, f"Unable to start the broadcast.\n\n{exc}")
+            QMessageBox.critical(self, APP_NAME, f"Unable to start the broadcast.\n\n{exc}")
             return
 
-        self.primary_button.configure(text="Stop Broadcast", bg=APP_COLORS["accent"], fg="#2d1408")
-        self.status_badge.set("Broadcasting")
-        self.status_title.set("Broadcast live on local network")
+        self.primary_button.setText("Stop Broadcast")
+        self.primary_button.setProperty("accent", True)
+        self.primary_button.style().unpolish(self.primary_button)
+        self.primary_button.style().polish(self.primary_button)
+        self.status_badge.setText("Status: Broadcasting")
+        self.status_title.setText("Broadcast live on local network")
         self._refresh_status_ui()
 
     def stop_broadcast(self):
@@ -511,90 +608,53 @@ class DisplayShareDesktopApp:
             return
         self.manager.stop()
         self.manager = None
-        self.primary_button.configure(text="Start Broadcast",
-                                      bg=APP_COLORS["primary"],
-                                      fg=APP_COLORS["foreground"])
-        self.status_badge.set("Ready")
-        self.status_title.set("Ready for service")
-        self.status_text.set(build_status_text({"is_running": False}))
-        self.viewer_url.set("Not live yet")
-        self.viewer_count.set("0")
-
-    def toggle_advanced(self):
-        self.advanced_visible = not self.advanced_visible
-        if self.advanced_visible:
-            self.advanced_panel.pack(fill="x", pady=(14, 0))
-        else:
-            self.advanced_panel.pack_forget()
+        self.primary_button.setText("Start Broadcast")
+        self.primary_button.setProperty("accent", False)
+        self.primary_button.style().unpolish(self.primary_button)
+        self.primary_button.style().polish(self.primary_button)
+        self.status_badge.setText("Status: Ready")
+        self.status_title.setText("Ready for service")
+        self.status_text.setText(build_status_text({"is_running": False}))
+        self.viewer_url_input.setText("Not live yet")
+        self.viewer_count_label.setText("0")
+        self.current_link_label.setText("Not live yet")
 
     def copy_viewer_link(self):
-        value = self.viewer_url.get()
+        value = self.viewer_url_input.text()
         if not value.startswith("http"):
             return
-        self.root.clipboard_clear()
-        self.root.clipboard_append(value)
-        self.status_badge.set("Link Copied")
-        self.root.after(1800, self._refresh_status_ui)
-
-    def _schedule_status_poll(self):
-        self._refresh_status_ui()
-        self.root.after(1500, self._schedule_status_poll)
-
-    def _handle_resize(self, _event):
-        self._render_preview_image()
-
-    def _load_preview_image(self, preview_file: Path):
-        if Image is None or ImageTk is None:
-            raise RuntimeError("Preview rendering requires Pillow.")
-        self._preview_source_image = Image.open(preview_file)
-        self._render_preview_image()
-
-    def _render_preview_image(self):
-        if self._preview_source_image is None or ImageTk is None:
-            return
-        frame_width = max(self.preview_card.winfo_width() - 32, 240)
-        frame_height = max(int(self.root.winfo_height() * 0.28), 180)
-        width, height = calculate_preview_size(
-            self._preview_source_image.width,
-            self._preview_source_image.height,
-            frame_width,
-            frame_height,
-        )
-        resized = self._preview_source_image.resize((width, height))
-        self.preview_image = ImageTk.PhotoImage(resized)
-        self.preview_image_label.configure(
-            image=self.preview_image,
-            text="",
-            width=width,
-            height=height,
-            wraplength=max(240, frame_width),
-        )
+        if QGuiApplication is not None:
+            QGuiApplication.clipboard().setText(value)
+        self.status_badge.setText("Status: Link Copied")
 
     def _refresh_status_ui(self):
         if self.manager is None:
-            self.status_text.set(build_status_text({"is_running": False}))
+            self.status_text.setText(build_status_text({"is_running": False}))
             return
-
         status = self.manager.get_status()
         if status["is_running"]:
-            self.status_badge.set("Broadcasting")
-            self.status_title.set("Broadcast live on local network")
+            self.status_badge.setText("Status: Broadcasting")
+            self.status_title.setText("Broadcast live on local network")
         else:
-            self.status_badge.set("Ready")
-            self.status_title.set("Ready for service")
-        self.status_text.set(build_status_text(status))
-        self.viewer_url.set(str(status["viewer_url"]))
-        self.viewer_count.set(str(status["viewer_count"]))
+            self.status_badge.setText("Status: Ready")
+            self.status_title.setText("Ready for service")
+        self.status_text.setText(build_status_text(status))
+        self.viewer_url_input.setText(str(status["viewer_url"]))
+        self.viewer_count_label.setText(str(status["viewer_count"]))
+        self.current_link_label.setText(str(status["viewer_url"]))
 
-    def on_close(self):
+    def closeEvent(self, event):  # noqa: N802
         if self.manager is not None:
             self.manager.stop()
-        self.root.destroy()
+        super().closeEvent(event)
 
 
 def launch_app():
-    if tk is None:
-        raise RuntimeError("Tkinter is not available in this Python environment.")
-    root = tk.Tk()
-    DisplayShareDesktopApp(root)
-    root.mainloop()
+    if QApplication is None:
+        raise RuntimeError("PySide6 is not available in this Python environment.")
+    app = QApplication.instance() or QApplication([])
+    if QFont is not None:
+        app.setFont(QFont("Segoe UI", 10))
+    window = DisplayShareDesktopApp()
+    window.show()
+    app.exec()
