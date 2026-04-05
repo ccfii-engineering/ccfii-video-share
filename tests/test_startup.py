@@ -119,6 +119,54 @@ class TestStartupBehavior(unittest.TestCase):
         self.assertIn("preview.png", cmd)
         self.assertNotIn("-offset_x", cmd)
 
+    def test_capture_preview_image_uses_native_desktop_grab(self):
+        target = server.CaptureTarget.desktop(FakeMonitor())
+
+        class FakeImage:
+            def __init__(self):
+                self.saved_paths = []
+
+            def save(self, path):
+                Path(path).write_bytes(b"preview")
+                self.saved_paths.append(path)
+
+        fake_image = FakeImage()
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = Path(temp_dir) / "preview.png"
+            with patch("ccfii_display_share.capture.ImageGrab.grab", return_value=fake_image) as mock_grab:
+                result = server.capture_preview_image(target, output_path)
+
+        self.assertEqual(result, output_path)
+        self.assertEqual(mock_grab.call_args.kwargs["bbox"], (10, 20, 1290, 740))
+        self.assertTrue(mock_grab.call_args.kwargs["all_screens"])
+
+    def test_capture_controller_rejects_immediate_ffmpeg_exit(self):
+        target = server.CaptureTarget.window(12345, "Notepad")
+
+        class ImmediateExitProcess(FakeProcess):
+            def poll(self):
+                return 1
+
+        def fake_start(_monitor, _fps, _quality):
+            return ImmediateExitProcess(stderr_data=b"gdigrab failed")
+
+        controller = server.CaptureController(
+            monitors=[target],
+            fps=15,
+            quality=4,
+            frame_buffer=server.FrameBuffer(),
+            shutdown_event=threading.Event(),
+            start_ffmpeg_fn=fake_start,
+            stop_ffmpeg_fn=lambda proc: None,
+            start_reader_fn=lambda proc, frame_buffer, shutdown_event, stop_event: None,
+        )
+
+        with self.assertRaises(RuntimeError) as error:
+            controller.start_capture(target)
+
+        self.assertIn("gdigrab failed", str(error.exception))
+
     def test_shutdown_watcher_handles_event_with_server_instance(self):
         shutdown_event = threading.Event()
 
@@ -306,13 +354,8 @@ class TestStartupBehavior(unittest.TestCase):
         self.assertTrue(shutdown_event.is_set())
 
     def test_capture_controller_switches_to_selected_monitor(self):
-        first_monitor = server.CaptureTarget.desktop(FakeMonitor())
-        monitor = FakeMonitor()
-        monitor.x = 100
-        monitor.y = 50
-        monitor.width = 1920
-        monitor.height = 1080
-        selected_monitor = server.CaptureTarget.desktop(monitor)
+        first_monitor = server.CaptureTarget.window(1001, "Presenter")
+        selected_monitor = server.CaptureTarget.window(1002, "Lyrics")
         started_monitors = []
         stop_calls = []
 

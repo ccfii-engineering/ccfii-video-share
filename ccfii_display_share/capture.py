@@ -3,12 +3,25 @@
 from __future__ import annotations
 
 import ctypes
+from io import BytesIO
 from pathlib import Path
 import shutil
 import subprocess
 import sys
 import threading
+import time
 from dataclasses import dataclass
+
+try:
+    from PIL import Image, ImageGrab
+except ModuleNotFoundError:  # pragma: no cover - depends on local Python build
+    Image = None
+    ImageGrab = None
+
+try:
+    import mss
+except ModuleNotFoundError:  # pragma: no cover - depends on local Python build
+    mss = None
 
 from .streaming import FrameBuffer, extract_frames
 
@@ -214,8 +227,34 @@ def build_preview_command(target: CaptureTarget, output_path: str | Path) -> lis
     return cmd
 
 
+def map_quality_to_jpeg_quality(quality: int) -> int:
+    """Convert FFmpeg-style qscale values to Pillow JPEG quality."""
+    return max(35, min(95, 100 - (quality * 2)))
+
+
+def capture_desktop_preview_image(target: CaptureTarget, output_path: str | Path) -> Path:
+    """Capture a display preview without FFmpeg for better Windows reliability."""
+    if ImageGrab is None:
+        raise RuntimeError("Pillow ImageGrab is not available in this Python environment.")
+
+    output = Path(output_path)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    bbox = (
+        int(target.x or 0),
+        int(target.y or 0),
+        int((target.x or 0) + (target.width or 0)),
+        int((target.y or 0) + (target.height or 0)),
+    )
+    image = ImageGrab.grab(bbox=bbox, all_screens=True)
+    image.save(output)
+    return output
+
+
 def capture_preview_image(target: CaptureTarget, output_path: str | Path) -> Path:
     """Capture a preview snapshot for the selected source."""
+    if target.kind == "desktop":
+        return capture_desktop_preview_image(target, output_path)
+
     output = Path(output_path)
     output.parent.mkdir(parents=True, exist_ok=True)
     subprocess.run(
@@ -254,6 +293,69 @@ def read_ffmpeg_stderr(proc: subprocess.Popen) -> str:
     if isinstance(stderr_output, bytes):
         return stderr_output.decode("utf-8", errors="replace").strip()
     return str(stderr_output).strip()
+
+
+def encode_screenshot_frame(target: CaptureTarget, quality: int) -> bytes:
+    """Encode a desktop screenshot to JPEG bytes for the MJPEG stream."""
+    if mss is None or Image is None:
+        raise RuntimeError("Desktop capture dependencies are not available.")
+
+    monitor = {
+        "left": int(target.x or 0),
+        "top": int(target.y or 0),
+        "width": int(target.width or 0),
+        "height": int(target.height or 0),
+    }
+
+    with mss.mss() as sct:
+        shot = sct.grab(monitor)
+        image = Image.frombytes("RGB", shot.size, shot.rgb)
+        buffer = BytesIO()
+        image.save(buffer, format="JPEG", quality=map_quality_to_jpeg_quality(quality))
+        return buffer.getvalue()
+
+
+def desktop_capture_reader(
+    target: CaptureTarget,
+    fps: int,
+    quality: int,
+    buffer: FrameBuffer,
+    shutdown_event: threading.Event,
+    stop_event: threading.Event,
+):
+    frame_interval = 1.0 / max(1, fps)
+    last_error = ""
+    while not shutdown_event.is_set() and not stop_event.is_set():
+        started_at = time.perf_counter()
+        try:
+            frame = encode_screenshot_frame(target, quality)
+            buffer.update(frame)
+        except Exception as exc:
+            last_error = str(exc).strip()
+            break
+        elapsed = time.perf_counter() - started_at
+        remaining = frame_interval - elapsed
+        if remaining > 0:
+            time.sleep(remaining)
+
+    if not stop_event.is_set() and last_error:
+        setattr(shutdown_event, "ffmpeg_error", last_error)
+        shutdown_event.set()
+
+
+def start_desktop_reader_thread(target: CaptureTarget,
+                                fps: int,
+                                quality: int,
+                                frame_buffer: FrameBuffer,
+                                shutdown_event: threading.Event,
+                                stop_event: threading.Event) -> threading.Thread:
+    thread = threading.Thread(
+        target=desktop_capture_reader,
+        args=(target, fps, quality, frame_buffer, shutdown_event, stop_event),
+        daemon=True,
+    )
+    thread.start()
+    return thread
 
 
 def ffmpeg_reader(proc: subprocess.Popen, buffer: FrameBuffer,
@@ -318,11 +420,26 @@ class CaptureController:
         return self._monitor
 
     def start_capture(self, monitor):
-        proc = self._start_ffmpeg(monitor, self.fps, self.quality)
         setattr(self.shutdown_event, "ffmpeg_error", "")
         stop_event = threading.Event()
-        reader_thread = self._start_reader(
-            proc, self.frame_buffer, self.shutdown_event, stop_event)
+        if monitor.kind == "desktop":
+            proc = None
+            reader_thread = start_desktop_reader_thread(
+                monitor,
+                self.fps,
+                self.quality,
+                self.frame_buffer,
+                self.shutdown_event,
+                stop_event,
+            )
+        else:
+            proc = self._start_ffmpeg(monitor, self.fps, self.quality)
+            time.sleep(0.2)
+            if hasattr(proc, "poll") and proc.poll() is not None:
+                stderr_details = read_ffmpeg_stderr(proc) or "FFmpeg exited before capture started."
+                raise RuntimeError(stderr_details)
+            reader_thread = self._start_reader(
+                proc, self.frame_buffer, self.shutdown_event, stop_event)
         with self._lock:
             self._proc = proc
             self._reader_thread = reader_thread

@@ -1,2 +1,4 @@
 screeninfo
 PySide6
+Pillow
+mss
