@@ -45,16 +45,25 @@ To build the packaged macOS app and archive:
 
 ```bash
 python -m pip install -r requirements.txt
-python -m PyInstaller --noconfirm --windowed --name CCFIIDisplayShare --add-data "assets/ccfii-logo.png:assets" desktop_app.py
+sips -z 512 512 assets/ccfii-logo.png --out assets/ccfii-logo-512.png
+mkdir -p build/macos-icon.iconset
+cp assets/ccfii-logo-512.png build/macos-icon.iconset/icon_512x512.png
+cp assets/ccfii-logo-512.png build/macos-icon.iconset/icon_512x512@2x.png
+iconutil -c icns build/macos-icon.iconset -o assets/ccfii-logo.icns
+python -m PyInstaller --noconfirm --windowed --name CCFIIDisplayShare --icon assets/ccfii-logo.icns --add-data "assets/ccfii-logo.png:assets" desktop_app.py
+codesign --force --deep --sign - dist/CCFIIDisplayShare.app
 ditto -c -k --keepParent dist/CCFIIDisplayShare.app dist/CCFIIDisplayShare-macos.zip
 ```
 
 The macOS build flow:
 - produces a `.app` bundle with the same desktop UI
 - packages the CCFII logo with the app
+- generates a `.icns` app icon from the CCFII logo
 - keeps display preview available through the macOS backend
 - may require `Screen Recording` permission for preview capture
 - does not yet enable live macOS display broadcasting
+
+If macOS warns that the app "developer cannot be verified," use Finder to `Right-click -> Open` the app once and confirm the prompt. The workflow now ad-hoc signs the bundle, but it is still not notarized.
 
 ## Project Structure
 

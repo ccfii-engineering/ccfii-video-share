@@ -364,7 +364,17 @@ class TestStartupBehavior(unittest.TestCase):
         self.assertIn("Create draft GitHub release", workflow)
         self.assertIn("CCFIIDisplayShare-macos.zip", workflow)
         self.assertIn("GH_REPO: ${{ github.repository }}", workflow)
+        self.assertIn("iconutil", workflow)
+        self.assertIn("ccfii-logo.icns", workflow)
+        self.assertIn("codesign --force --deep --sign -", workflow)
         self.assertNotIn("actions/upload-artifact", workflow)
+
+    def test_readme_mentions_unsigned_macos_app_opening_and_icon_packaging(self):
+        readme = (ROOT / "README.md").read_text()
+
+        self.assertIn(".icns", readme)
+        self.assertIn("Right-click", readme)
+        self.assertIn("developer cannot be verified", readme)
 
     def test_no_separate_macos_release_workflow_exists(self):
         workflow_path = ROOT / ".github" / "workflows" / "build-macos.yml"

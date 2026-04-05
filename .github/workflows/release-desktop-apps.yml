@@ -133,6 +133,21 @@ jobs:
           python -m pip install -r requirements.txt
           python -m pip install pyinstaller pytest
 
+      - name: Build macOS icon asset
+        run: |
+          mkdir -p build/macos-icon.iconset
+          sips -z 16 16 assets/ccfii-logo.png --out build/macos-icon.iconset/icon_16x16.png
+          sips -z 32 32 assets/ccfii-logo.png --out build/macos-icon.iconset/icon_16x16@2x.png
+          sips -z 32 32 assets/ccfii-logo.png --out build/macos-icon.iconset/icon_32x32.png
+          sips -z 64 64 assets/ccfii-logo.png --out build/macos-icon.iconset/icon_32x32@2x.png
+          sips -z 128 128 assets/ccfii-logo.png --out build/macos-icon.iconset/icon_128x128.png
+          sips -z 256 256 assets/ccfii-logo.png --out build/macos-icon.iconset/icon_128x128@2x.png
+          sips -z 256 256 assets/ccfii-logo.png --out build/macos-icon.iconset/icon_256x256.png
+          sips -z 512 512 assets/ccfii-logo.png --out build/macos-icon.iconset/icon_256x256@2x.png
+          sips -z 512 512 assets/ccfii-logo.png --out build/macos-icon.iconset/icon_512x512.png
+          cp assets/ccfii-logo.png build/macos-icon.iconset/icon_512x512@2x.png
+          iconutil -c icns build/macos-icon.iconset -o assets/ccfii-logo.icns
+
       - name: Run tests
         run: |
           python -m pytest tests/test_frame_parser.py -q
@@ -146,9 +161,13 @@ jobs:
             --windowed \
             --name CCFIIDisplayShare \
             --add-data "assets/ccfii-logo.png:assets" \
+            --icon assets/ccfii-logo.icns \
             --hidden-import ccfii_display_share.capture.backends.macos \
             --hidden-import ccfii_display_share.capture.backends.windows \
             desktop_app.py
+
+      - name: Ad-hoc sign macOS app bundle
+        run: codesign --force --deep --sign - "dist/CCFIIDisplayShare.app"
 
       - name: Document Screen Recording requirement
         run: echo "Screen Recording permission may be required for macOS preview capture."
