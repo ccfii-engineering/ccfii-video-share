@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 import threading
+import time
 from http.server import BaseHTTPRequestHandler
 from urllib.parse import urlsplit
 
@@ -39,11 +41,13 @@ class FrameBuffer:
         self._condition = threading.Condition()
         self._viewer_count = 0
         self._viewer_lock = threading.Lock()
+        self._last_frame_monotonic: float | None = None
 
     def update(self, frame: bytes):
         with self._condition:
             self._frame = frame
             self._version += 1
+            self._last_frame_monotonic = time.monotonic()
             self._condition.notify_all()
 
     def wait_for_new_frame(self, last_version: int,
@@ -71,6 +75,18 @@ class FrameBuffer:
     def viewer_count(self) -> int:
         with self._viewer_lock:
             return self._viewer_count
+
+    @property
+    def has_frame(self) -> bool:
+        with self._condition:
+            return self._frame is not None
+
+    @property
+    def last_frame_age_seconds(self) -> float | None:
+        with self._condition:
+            if self._last_frame_monotonic is None:
+                return None
+            return time.monotonic() - self._last_frame_monotonic
 
 
 VIEWER_HTML = b"""<!DOCTYPE html>
@@ -143,7 +159,25 @@ class StreamHandler(BaseHTTPRequestHandler):
     """HTTP handler that serves the viewer page and MJPEG stream."""
 
     frame_buffer: FrameBuffer
+    # Optional callable returning a status dict. Set on the class by
+    # BroadcastManager. The viewer HTML intentionally does NOT consume this
+    # endpoint — /health exists purely as a diagnostic surface so that
+    # heuristic reconnect logic cannot regress into VIEWER_HTML.
+    status_provider = None
     BOUNDARY = b"frame"
+
+    # Fields copied through from status_provider() into the /health payload.
+    # capabilities is deliberately excluded because it is a dataclass that
+    # does not JSON-serialize cleanly.
+    _HEALTH_STATUS_FIELDS = (
+        "target_label",
+        "fps",
+        "quality",
+        "backend_name",
+        "error",
+        "viewer_url",
+        "backend_running",
+    )
 
     def do_GET(self):
         route = urlsplit(self.path).path
@@ -151,6 +185,8 @@ class StreamHandler(BaseHTTPRequestHandler):
             self._serve_viewer()
         elif route == "/stream":
             self._serve_stream()
+        elif route == "/health":
+            self._serve_health()
         else:
             self.send_error(404)
 
@@ -160,6 +196,45 @@ class StreamHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(VIEWER_HTML)))
         self.end_headers()
         self.wfile.write(VIEWER_HTML)
+
+    def _serve_health(self):
+        payload = self._build_health_payload()
+        body = json.dumps(payload).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        try:
+            self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            pass
+
+    def _build_health_payload(self) -> dict:
+        buffer = self.frame_buffer
+        age_seconds = buffer.last_frame_age_seconds
+        payload: dict = {
+            "alive": True,
+            "has_frame": buffer.has_frame,
+            "last_frame_age_ms": (
+                int(age_seconds * 1000) if age_seconds is not None else None
+            ),
+            "viewer_count": buffer.viewer_count,
+        }
+        provider = type(self).status_provider
+        if provider is None:
+            return payload
+        try:
+            status = provider() or {}
+        except Exception as exc:  # pragma: no cover - defensive diagnostic
+            payload["status_error"] = str(exc)
+            return payload
+        if "is_running" in status:
+            payload["alive"] = bool(status["is_running"])
+        for key in self._HEALTH_STATUS_FIELDS:
+            if key in status:
+                payload[key] = status[key]
+        return payload
 
     def _serve_stream(self):
         self.send_response(200)

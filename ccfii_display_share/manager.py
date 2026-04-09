@@ -80,6 +80,7 @@ class BroadcastManager:
                     or "Capture backend failed to start."
                 )
             self.handler_class.frame_buffer = self.frame_buffer
+            self.handler_class.status_provider = self.get_status
             self.server = self.server_factory(("0.0.0.0", self.port),
                                               self.handler_class)
             self._watcher_thread = self.shutdown_watcher_fn(

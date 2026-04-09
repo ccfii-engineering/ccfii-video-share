@@ -2,6 +2,7 @@
 
 import importlib
 from io import BytesIO
+import json
 from pathlib import Path
 import tempfile
 import time
@@ -176,6 +177,23 @@ class TestStartupBehavior(unittest.TestCase):
         frame_buffer.remove_viewer()
 
         self.assertEqual(frame_buffer.viewer_count, 1)
+
+    def test_frame_buffer_has_no_frame_before_any_update(self):
+        frame_buffer = server.FrameBuffer()
+
+        self.assertFalse(frame_buffer.has_frame)
+        self.assertIsNone(frame_buffer.last_frame_age_seconds)
+
+    def test_frame_buffer_tracks_last_frame_age_after_update(self):
+        frame_buffer = server.FrameBuffer()
+
+        frame_buffer.update(b"\xff\xd8frame\xff\xd9")
+
+        self.assertTrue(frame_buffer.has_frame)
+        age = frame_buffer.last_frame_age_seconds
+        self.assertIsNotNone(age)
+        self.assertGreaterEqual(age, 0.0)
+        self.assertLess(age, 1.0)
 
     def test_ffmpeg_reader_reports_stderr_details(self):
         proc = FakeProcess(stderr_data=b"Unknown input format: gdigrab")
@@ -519,6 +537,209 @@ class TestStartupBehavior(unittest.TestCase):
         self.assertIn("setTimeout(connectStream", html)
         self.assertIn("/stream?ts=", html)
         self.assertIn("img.onerror", html)
+
+    def _build_health_handler(self, frame_buffer=None, status_provider=None):
+        """Return a StreamHandler wired up for in-process /health tests."""
+
+        class RecordingWriter:
+            def __init__(self):
+                self.chunks = []
+
+            def write(self, data):
+                self.chunks.append(data)
+
+        handler = server.StreamHandler.__new__(server.StreamHandler)
+        handler.frame_buffer = frame_buffer or server.FrameBuffer()
+        handler.wfile = RecordingWriter()
+        handler.sent_response = []
+        handler.sent_headers = []
+        handler.send_response = lambda code: handler.sent_response.append(code)
+        handler.send_header = lambda name, value: handler.sent_headers.append((name, value))
+        handler.end_headers = lambda: None
+        # Reset the class attribute before each test so state does not leak.
+        server.StreamHandler.status_provider = status_provider
+        return handler
+
+    def _read_health_body(self, handler) -> dict:
+        body = b"".join(handler.wfile.chunks)
+        return json.loads(body.decode("utf-8"))
+
+    def test_health_endpoint_reports_no_frame_before_capture_starts(self):
+        handler = self._build_health_handler()
+
+        try:
+            handler._serve_health()
+        finally:
+            server.StreamHandler.status_provider = None
+
+        self.assertEqual(handler.sent_response, [200])
+        content_types = [value for name, value in handler.sent_headers if name == "Content-Type"]
+        self.assertEqual(content_types, ["application/json"])
+
+        payload = self._read_health_body(handler)
+        self.assertTrue(payload["alive"])
+        self.assertFalse(payload["has_frame"])
+        self.assertIsNone(payload["last_frame_age_ms"])
+        self.assertEqual(payload["viewer_count"], 0)
+
+    def test_health_endpoint_reports_frame_age_and_viewer_count(self):
+        frame_buffer = server.FrameBuffer()
+        frame_buffer.update(b"\xff\xd8frame\xff\xd9")
+        frame_buffer.add_viewer()
+        frame_buffer.add_viewer()
+
+        handler = self._build_health_handler(frame_buffer=frame_buffer)
+
+        try:
+            handler._serve_health()
+        finally:
+            server.StreamHandler.status_provider = None
+
+        payload = self._read_health_body(handler)
+        self.assertTrue(payload["has_frame"])
+        self.assertIsNotNone(payload["last_frame_age_ms"])
+        self.assertGreaterEqual(payload["last_frame_age_ms"], 0)
+        self.assertLess(payload["last_frame_age_ms"], 5000)
+        self.assertEqual(payload["viewer_count"], 2)
+
+    def test_health_endpoint_merges_status_provider_fields(self):
+        def fake_status():
+            return {
+                "is_running": True,
+                "target_label": "Desktop: Display 1",
+                "fps": 30,
+                "quality": 5,
+                "backend_name": "windows",
+                "error": "",
+                "viewer_url": "http://192.168.1.77:9090",
+                "capabilities": object(),  # must not break JSON serialization
+            }
+
+        handler = self._build_health_handler(status_provider=fake_status)
+
+        try:
+            handler._serve_health()
+        finally:
+            server.StreamHandler.status_provider = None
+
+        payload = self._read_health_body(handler)
+        self.assertTrue(payload["alive"])
+        self.assertEqual(payload["target_label"], "Desktop: Display 1")
+        self.assertEqual(payload["fps"], 30)
+        self.assertEqual(payload["quality"], 5)
+        self.assertEqual(payload["backend_name"], "windows")
+        # Non-serializable fields (e.g. capabilities) must not leak into payload.
+        self.assertNotIn("capabilities", payload)
+
+    def test_health_endpoint_reflects_is_running_false_from_status_provider(self):
+        handler = self._build_health_handler(
+            status_provider=lambda: {"is_running": False, "error": "capture exited"}
+        )
+
+        try:
+            handler._serve_health()
+        finally:
+            server.StreamHandler.status_provider = None
+
+        payload = self._read_health_body(handler)
+        self.assertFalse(payload["alive"])
+        self.assertEqual(payload["error"], "capture exited")
+
+    def test_health_endpoint_survives_failing_status_provider(self):
+        def boom():
+            raise RuntimeError("status provider exploded")
+
+        handler = self._build_health_handler(status_provider=boom)
+
+        try:
+            handler._serve_health()
+        finally:
+            server.StreamHandler.status_provider = None
+
+        self.assertEqual(handler.sent_response, [200])
+        payload = self._read_health_body(handler)
+        self.assertIn("status_error", payload)
+        self.assertIn("status provider exploded", payload["status_error"])
+        # Core buffer fields must still be present even when the provider fails.
+        self.assertIn("viewer_count", payload)
+        self.assertIn("has_frame", payload)
+
+    def test_do_get_routes_health_requests(self):
+        called = []
+
+        handler = server.StreamHandler.__new__(server.StreamHandler)
+        handler.path = "/health"
+        handler._serve_viewer = lambda: called.append("viewer")
+        handler._serve_stream = lambda: called.append("stream")
+        handler._serve_health = lambda: called.append("health")
+        handler.send_error = lambda code: called.append(f"error:{code}")
+
+        handler.do_GET()
+
+        self.assertEqual(called, ["health"])
+
+    def test_viewer_html_does_not_poll_health_endpoint(self):
+        """/health is diagnostic only. The viewer must not poll it — that
+        would be the same class of heuristic reconnect trigger we removed
+        when we killed the client-side stall timer."""
+
+        html = server.VIEWER_HTML.decode("utf-8")
+
+        self.assertNotIn("/health", html)
+
+    def test_broadcast_manager_wires_health_status_provider(self):
+        selected_target = server.CaptureTarget.desktop(FakeMonitor())
+
+        class FakeController:
+            def __init__(self, **kwargs):
+                self.current_monitor = None
+
+            def start_capture(self, target):
+                self.current_monitor = target
+
+            def stop_capture(self):
+                pass
+
+        class FakeServer:
+            def __init__(self, address, handler_cls):
+                self.address = address
+                self.handler_cls = handler_cls
+
+            def serve_forever(self):
+                return None
+
+            def shutdown(self):
+                return None
+
+        class FakeHandler:
+            pass
+
+        manager = server.BroadcastManager(
+            targets=[selected_target],
+            port=9090,
+            fps=25,
+            quality=6,
+            handler_class=FakeHandler,
+            lan_ip_fn=lambda: "192.168.1.77",
+            controller_factory=lambda **kwargs: FakeController(**kwargs),
+            server_factory=lambda address, handler_cls: FakeServer(address, handler_cls),
+            shutdown_watcher_fn=lambda shutdown_event, http_server: None,
+        )
+
+        manager.start(selected_target)
+        try:
+            self.assertTrue(hasattr(FakeHandler, "status_provider"))
+            # Bound methods are created fresh on each attribute access, so
+            # identity comparison fails; compare equality (same __self__ and
+            # __func__) and also verify the provider actually returns the
+            # manager's status.
+            self.assertEqual(FakeHandler.status_provider, manager.get_status)
+            provided = FakeHandler.status_provider()
+            self.assertEqual(provided["target_label"], selected_target.label)
+            self.assertEqual(provided["viewer_url"], "http://192.168.1.77:9090")
+            self.assertIs(FakeHandler.frame_buffer, manager.frame_buffer)
+        finally:
+            manager.stop()
 
     def test_viewer_html_has_no_client_side_stall_timer(self):
         """Mobile browsers (notably iOS Safari) do not reliably fire
