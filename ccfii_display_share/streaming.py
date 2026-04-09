@@ -6,7 +6,7 @@ import threading
 from http.server import BaseHTTPRequestHandler
 from urllib.parse import urlsplit
 
-from .config import STREAM_IDLE_RETRIES, STREAM_WAIT_TIMEOUT
+from .config import STREAM_WAIT_TIMEOUT
 
 
 JPEG_SOI = b"\xff\xd8"
@@ -182,17 +182,16 @@ class StreamHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.frame_buffer.add_viewer()
         last_version = 0
-        idle_retries = 0
         try:
             while True:
                 frame, last_version = self.frame_buffer.wait_for_new_frame(
                     last_version, timeout=STREAM_WAIT_TIMEOUT)
                 if frame is None:
-                    idle_retries += 1
-                    if idle_retries >= STREAM_IDLE_RETRIES:
-                        break
+                    # Capture pipeline is momentarily quiet. Keep the viewer's
+                    # HTTP connection open and keep waiting. The connection
+                    # will end naturally on client disconnect (raises in
+                    # self.wfile.write below) or on broadcast shutdown.
                     continue
-                idle_retries = 0
                 self.wfile.write(b"--frame\r\n")
                 self.wfile.write(b"Content-Type: image/jpeg\r\n")
                 self.wfile.write(f"Content-Length: {len(frame)}\r\n".encode())

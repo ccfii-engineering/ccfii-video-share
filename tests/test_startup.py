@@ -443,27 +443,56 @@ class TestStartupBehavior(unittest.TestCase):
 
         handler._serve_stream()
 
-    def test_stream_handler_stops_stale_stream_to_allow_client_reconnect(self):
+    def test_stream_handler_keeps_viewer_connected_through_capture_stall(self):
+        """A transient capture stall must not close the viewer's HTTP stream.
+
+        The server used to break out of the streaming loop after a handful of
+        idle timeouts, which caused the browser viewer to flash
+        "Disconnected. Reconnecting..." every time the capture pipeline went
+        briefly quiet (FFmpeg pipe hiccup, blocked PrintWindow snapshot, etc.)
+        even though the broadcast was still healthy. The streaming loop must
+        keep waiting until the client actually disconnects or the server shuts
+        down.
+        """
+
+        frame_bytes = b"\xff\xd8frame\xff\xd9"
+
         class FakeFrameBuffer:
             def __init__(self):
                 self.wait_calls = 0
+                self.viewer_added = False
+                self.viewer_removed = False
 
             def add_viewer(self):
-                pass
+                self.viewer_added = True
 
             def remove_viewer(self):
-                pass
+                self.viewer_removed = True
 
-            def wait_for_new_frame(self, _last_version, timeout=2.0):
+            def wait_for_new_frame(self, last_version, timeout=2.0):
                 self.wait_calls += 1
-                return None, 0
+                # Simulate a long capture stall — many more idle timeouts than
+                # the old guard allowed — followed by a fresh frame. Once the
+                # fresh frame is delivered, raise to end the loop so the test
+                # can assert what happened.
+                stall_budget = 10  # >> the historical STREAM_IDLE_RETRIES = 3
+                if self.wait_calls <= stall_budget:
+                    return None, last_version
+                return frame_bytes, last_version + 1
 
         class FakeWriter:
             def __init__(self):
                 self.chunks = []
+                self.raise_after_first_frame = False
+                self.frame_written = False
 
             def write(self, data):
                 self.chunks.append(data)
+                if data == frame_bytes:
+                    self.frame_written = True
+                    # Simulate the client disconnecting right after the first
+                    # real frame lands, so the loop terminates cleanly.
+                    raise ConnectionResetError("viewer closed")
 
         handler = server.StreamHandler.__new__(server.StreamHandler)
         handler.frame_buffer = FakeFrameBuffer()
@@ -474,7 +503,15 @@ class TestStartupBehavior(unittest.TestCase):
 
         handler._serve_stream()
 
-        self.assertEqual(handler.frame_buffer.wait_calls, server.STREAM_IDLE_RETRIES)
+        # The loop should have survived well past the old idle-retry limit and
+        # still delivered the eventual frame, proving that a transient stall
+        # does not terminate the viewer connection.
+        self.assertGreater(
+            handler.frame_buffer.wait_calls, server.STREAM_IDLE_RETRIES + 5
+        )
+        self.assertTrue(handler.wfile.frame_written)
+        self.assertTrue(handler.frame_buffer.viewer_added)
+        self.assertTrue(handler.frame_buffer.viewer_removed)
 
     def test_viewer_html_retries_stream_after_disconnect(self):
         html = server.VIEWER_HTML.decode("utf-8")
