@@ -105,19 +105,8 @@ VIEWER_HTML = b"""<!DOCTYPE html>
   const status = document.getElementById("status");
   let retryDelay = 1000;
   let reconnectTimer = null;
-  let stallTimer = null;
-  const STALL_TIMEOUT = 8000;
-
-  function resetStallTimer() {
-    clearTimeout(stallTimer);
-    stallTimer = setTimeout(function() {
-      img.removeAttribute("src");
-      scheduleReconnect();
-    }, STALL_TIMEOUT);
-  }
 
   function scheduleReconnect() {
-    clearTimeout(stallTimer);
     if (reconnectTimer !== null) return;
     status.textContent = "Disconnected. Reconnecting...";
     reconnectTimer = setTimeout(connectStream, retryDelay);
@@ -128,13 +117,11 @@ VIEWER_HTML = b"""<!DOCTYPE html>
     reconnectTimer = null;
     status.textContent = "Connecting...";
     img.src = "/stream?ts=" + Date.now();
-    resetStallTimer();
   }
 
   img.onload = function() {
     retryDelay = 1000;
     status.textContent = "";
-    resetStallTimer();
   };
 
   img.onerror = function() {

@@ -520,6 +520,22 @@ class TestStartupBehavior(unittest.TestCase):
         self.assertIn("/stream?ts=", html)
         self.assertIn("img.onerror", html)
 
+    def test_viewer_html_has_no_client_side_stall_timer(self):
+        """Mobile browsers (notably iOS Safari) do not reliably fire
+        img.onload for each part of a multipart/x-mixed-replace stream, so a
+        client-side stall timer that depends on onload causes spurious
+        "Disconnected. Reconnecting..." flashes on phones even when the
+        server is streaming fine. The server now keeps connections open
+        until a real socket error, so the stall heuristic must not exist.
+        Only img.onerror (real transport failure) may trigger reconnect.
+        """
+
+        html = server.VIEWER_HTML.decode("utf-8")
+
+        self.assertNotIn("STALL_TIMEOUT", html)
+        self.assertNotIn("stallTimer", html)
+        self.assertNotIn("resetStallTimer", html)
+
     def test_do_get_routes_stream_requests_with_query_string(self):
         called = []
 
